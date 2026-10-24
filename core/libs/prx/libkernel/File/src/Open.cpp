@@ -25,6 +25,8 @@
 #include <cerrno>
 #include <cstdarg>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -288,17 +290,25 @@ void File::ForgetClosedDescriptor(int descriptor) {
 
 namespace {
 
-void ForgetStreamDescriptor(int descriptor) {
+void* BeginClosingStreamDescriptor(int descriptor) {
     EqueueDescriptorClosed(descriptor);
 #ifdef _WIN32
-    const auto positioned = File::LockPositionedTransfer(descriptor);
-#endif
+    auto positioned = std::make_unique<File::PositionedTransferLock>(File::LockPositionedTransfer(descriptor));
     File::ForgetClosedDescriptor(descriptor);
+    return positioned.release();
+#else
+    File::ForgetClosedDescriptor(descriptor);
+    return nullptr;
+#endif
+}
+
+void EndClosingStreamDescriptor(void* closing) {
+    delete static_cast<File::PositionedTransferLock*>(closing);
 }
 
 struct ClosedDescriptorRegistration {
-    ClosedDescriptorRegistration() { LibcRegisterClosedDescriptors_nid_no_patch(&ForgetStreamDescriptor); }
-    ~ClosedDescriptorRegistration() { LibcRegisterClosedDescriptors_nid_no_patch(nullptr); }
+    ClosedDescriptorRegistration() { LibcRegisterClosedDescriptors_nid_no_patch(&BeginClosingStreamDescriptor, &EndClosingStreamDescriptor); }
+    ~ClosedDescriptorRegistration() { LibcRegisterClosedDescriptors_nid_no_patch(nullptr, nullptr); }
     ClosedDescriptorRegistration(const ClosedDescriptorRegistration&) = delete;
     ClosedDescriptorRegistration& operator=(const ClosedDescriptorRegistration&) = delete;
 };

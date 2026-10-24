@@ -245,7 +245,7 @@ struct PositionedLock {
 };
 std::mutex g_positionedTableLock;
 std::unordered_map<int, std::shared_ptr<PositionedLock>> g_positionedLocks;
-std::unique_lock<std::mutex> File::LockPositionedTransfer(int descriptor) {
+File::PositionedTransferLock File::LockPositionedTransfer(int descriptor) {
     std::shared_ptr<PositionedLock> entry;
     {
         std::lock_guard table(g_positionedTableLock);
@@ -253,7 +253,7 @@ std::unique_lock<std::mutex> File::LockPositionedTransfer(int descriptor) {
         if (!slot) slot = std::make_shared<PositionedLock>();
         entry = slot;
     }
-    return std::unique_lock<std::mutex>(entry->mutex);
+    return PositionedTransferLock(std::shared_ptr<std::mutex>(entry, &entry->mutex));
 }
 void File::SharePositionedTransfer(int from, int to) {
     std::lock_guard table(g_positionedTableLock);
