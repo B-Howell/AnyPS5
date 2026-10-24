@@ -773,12 +773,8 @@ int APS5_VABI close_nid_postfix(int d) {
 #ifdef _WIN32
     const auto positioned = File::LockPositionedTransfer(d);
 #endif
-    File::ForgetRandomDevice(d);
-    File::ForgetDescriptor(d);
-    ForgetJitSharedMemory(d);
-    File::ForgetDirectoryDescriptor(d);
+    File::ForgetClosedDescriptor(d);
 #ifdef _WIN32
-    File::ForgetFileLock(d);
     const int shared = File::CloseSharedMemoryDescriptor_nid_no_patch(d);
     if (shared != -2) return shared;
     return WithoutParameterHandler([d] { return ::_close(d); });

@@ -33,6 +33,7 @@ namespace File {
 std::optional<std::filesystem::path> WindowsDescriptorPath_nid_no_patch(int descriptor);
 #endif
 int HostStandardError();
+void ForgetClosedDescriptor(int descriptor);
 [[nodiscard]] std::unique_lock<std::mutex> LockPositionedTransfer(int descriptor);
 void SharePositionedTransfer(int from, int to);
 #ifdef _WIN32

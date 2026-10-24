@@ -7,6 +7,7 @@
 #include "prx/libc/include/RenameDot.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/AppArchive.hpp"
+#include "prx/libc/include/FileStream.hpp"
 #include "prx/libkernel/DirectMemory/DirectMemory.hpp"
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/SharedMemory.hpp"
@@ -275,6 +276,37 @@ static int OpenNative(const std::filesystem::path& native, int flags, std::uint1
     return fd;
 }
 
+void File::ForgetClosedDescriptor(int descriptor) {
+    File::ForgetRandomDevice(descriptor);
+    File::ForgetDescriptor(descriptor);
+    ForgetJitSharedMemory(descriptor);
+#ifdef _WIN32
+    File::ForgetFileLock(descriptor);
+#endif
+    File::ForgetDirectoryDescriptor(descriptor);
+}
+
+namespace {
+
+void ForgetStreamDescriptor(int descriptor) {
+    EqueueDescriptorClosed(descriptor);
+#ifdef _WIN32
+    const auto positioned = File::LockPositionedTransfer(descriptor);
+#endif
+    File::ForgetClosedDescriptor(descriptor);
+}
+
+struct ClosedDescriptorRegistration {
+    ClosedDescriptorRegistration() { LibcRegisterClosedDescriptors_nid_no_patch(&ForgetStreamDescriptor); }
+    ~ClosedDescriptorRegistration() { LibcRegisterClosedDescriptors_nid_no_patch(nullptr); }
+    ClosedDescriptorRegistration(const ClosedDescriptorRegistration&) = delete;
+    ClosedDescriptorRegistration& operator=(const ClosedDescriptorRegistration&) = delete;
+};
+
+const ClosedDescriptorRegistration g_closedDescriptorRegistration;
+
+}
+
 extern "C" {
 
 int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
@@ -321,13 +353,7 @@ int APS5_VABI sceKernelClose(int d) {
 #ifdef _WIN32
     const auto positioned = File::LockPositionedTransfer(d);
 #endif
-    File::ForgetRandomDevice(d);
-    File::ForgetDescriptor(d);
-    ForgetJitSharedMemory(d);
-#ifdef _WIN32
-    File::ForgetFileLock(d);
-#endif
-    File::ForgetDirectoryDescriptor(d);
+    File::ForgetClosedDescriptor(d);
     if (NativeClose(d) != 0) {
         if (errno == EBADF) return SCE_KERNEL_ERROR_EBADF;
         throw std::runtime_error(std::string(__func__) + ": close failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));

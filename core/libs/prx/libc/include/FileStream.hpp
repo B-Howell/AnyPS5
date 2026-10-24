@@ -34,6 +34,8 @@ extern "C" void ForgetDirectoryStream_nid_no_patch(int descriptor);
 extern "C" int _IO_switch_to_get_mode(std::FILE* stream);
 #endif
 extern "C" int DuplicateHostDescriptor_nid_no_patch(int descriptor);
+extern "C" void LibcRegisterClosedDescriptors_nid_no_patch(void (*forget)(int descriptor));
+extern "C" void ForgetClosedDescriptor_nid_no_patch(int descriptor);
 
 struct GuestFilePrefix {
     unsigned char* position = nullptr;
@@ -158,6 +160,7 @@ public:
         if (std::exchange(directory, false)) ForgetDirectoryStream_nid_no_patch(replaced);
         auto* const standard = HostStandardHandle_nid_no_patch(replaced);
         GuestFileLockForget_nid_no_patch(replaced);
+        ForgetClosedDescriptor_nid_no_patch(replaced);
         if (open && !filename.empty()) {
             if (!IsHostStandard()) {
                 _handle = nullptr;
@@ -201,6 +204,7 @@ public:
         KeepStandardHandle_nid_no_patch(replaced, standard);
 #else
         if (::fileno(previous) == 2) KeepHostStandardError_nid_no_patch();
+        ForgetClosedDescriptor_nid_no_patch(::fileno(previous));
         const int kept = IsHostStandard() ? DuplicateHostDescriptor_nid_no_patch(::fileno(previous)) : -1;
         if (kept >= 0) ::flockfile(previous);
         _handle = std::freopen(filename.c_str(), mode, previous);
@@ -302,6 +306,9 @@ public:
 #ifdef _WIN32
         GuestFileLockForget_nid_no_patch(::_fileno(_handle));
         if (std::exchange(directory, false)) ForgetDirectoryStream_nid_no_patch(::_fileno(_handle));
+        ForgetClosedDescriptor_nid_no_patch(::_fileno(_handle));
+#else
+        ForgetClosedDescriptor_nid_no_patch(::fileno(_handle));
 #endif
         const int result = std::fclose(std::exchange(_handle, nullptr));
         _guest.flags = 0;
