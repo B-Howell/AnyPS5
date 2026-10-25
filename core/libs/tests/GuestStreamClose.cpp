@@ -1,3 +1,7 @@
+#include "prx/libkernel/include/Api.hpp"
+#include "prx/libkernel/File/include/File.hpp"
+#include "prx/libc/include/Api.hpp"
+#include "prx/libc/include/FileStream.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <atomic>
 #include <chrono>
@@ -10,24 +14,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-class FileStream;
-
-extern "C" {
-int APS5_VABI sceKernelOpen(const char*, int, std::uint16_t);
-std::int64_t APS5_VABI sceKernelRead(int, void*, std::size_t);
-std::int64_t APS5_VABI sceKernelWrite(int, const void*, std::size_t);
-std::int64_t APS5_VABI sceKernelPwrite(int, const void*, std::size_t, std::int64_t);
-std::int64_t APS5_VABI sceKernelLseek(int, std::int64_t, int);
-int APS5_VABI fcntl_nid_postfix(int, int, ...);
-FileStream* APS5_VABI fopen_nid_postfix(const char*, const char*);
-FileStream* APS5_VABI fdopen_nid_postfix(int, const char*);
-FileStream* APS5_VABI freopen_nid_postfix(const char*, const char*, FileStream*);
-int APS5_VABI fclose_nid_postfix(FileStream*);
-int APS5_VABI fileno_nid_postfix(FileStream*);
-void APS5_VABI flockfile_nid_postfix(FileStream*);
-void APS5_VABI funlockfile_nid_postfix(FileStream*);
-}
 
 static void Check(bool condition, int line) {
     if (!condition) {
