@@ -26,7 +26,8 @@ def git(*args):
 
 def daily_commits(ref):
     try:
-        log = git("log", "--first-parent", "--format=%H %ct", ref)
+        revision = git("rev-parse", "--verify", "--end-of-options", ref + "^{commit}").decode("ascii").strip()
+        log = git("log", "--first-parent", "--format=%H %ct", revision, "--")
     except subprocess.CalledProcessError as error:
         reason = error.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(f"cannot read the history of {ref}: {reason}") from error

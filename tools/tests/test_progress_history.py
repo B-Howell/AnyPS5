@@ -99,6 +99,38 @@ class ProgressHistoryTests(unittest.TestCase):
         self.assertIn("<svg", html)
         self.assertIn("2026-01-02", html)
 
+    def test_revision_can_have_the_same_name_as_a_working_tree_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "-C", directory, "init", "-q"], check=True)
+            commit(root, "2026-01-01", "first", "int APS5_VABI A() { return 0; }\n")
+            subprocess.run(["git", "-C", directory, "branch", "core"], check=True)
+            subprocess.run(["git", "-C", directory, "-c", "user.name=t", "-c", "user.email=t@t",
+                            "tag", "-a", "core/libs", "-m", "fixture"], check=True)
+            sha = subprocess.run(["git", "-C", directory, "rev-parse", "HEAD"], check=True,
+                                 capture_output=True, text=True).stdout.strip()
+            with patch.multiple(progress, ROOT=root, PRX=root / "core/libs/prx", OPCODES=root / OPCODES):
+                for revision in ("core", "core/libs"):
+                    with self.subTest(revision=revision):
+                        self.assertEqual(progress_history.daily_commits(revision), [("2026-01-01", sha)])
+                output = root / "reports"
+                progress_history.main([str(output), "--ref", "core"])
+                points = json.loads((output / "history.json").read_text(encoding="utf-8"))
+                self.assertEqual(points[0]["commit"], sha)
+                self.assertEqual(points[0]["libraries"]["total"], 1)
+                self.assertTrue((output / "history.svg").is_file())
+                self.assertTrue((output / "history.html").is_file())
+
+    def test_ref_must_be_a_revision_instead_of_a_path_or_git_option(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "-C", directory, "init", "-q"], check=True)
+            commit(root, "2026-01-01", "first", "int APS5_VABI A() { return 0; }\n")
+            with patch.object(progress, "ROOT", root):
+                for revision in ("core/libs", "--all", "--max-count=0", "--"):
+                    with self.subTest(revision=revision), self.assertRaises(ValueError):
+                        progress_history.daily_commits(revision)
+
     def test_unknown_ref_is_reported_with_git_reason(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -108,7 +140,7 @@ class ProgressHistoryTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as raised:
                     progress_history.daily_commits("no-such-ref")
         self.assertIn("no-such-ref", str(raised.exception))
-        self.assertIn("unknown revision", str(raised.exception))
+        self.assertIn("Needed a single revision", str(raised.exception))
 
     def test_days_are_utc_whatever_the_committer_offset(self):
         with tempfile.TemporaryDirectory() as directory:
