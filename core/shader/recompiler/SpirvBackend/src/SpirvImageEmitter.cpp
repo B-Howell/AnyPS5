@@ -551,7 +551,8 @@ SpirvBufferFormatInfo ImageConversionFormat(const ImageResource& image) {
 }
 
 void RequireConvertedUnormAccess(SpirvValueEmitContext& ctx, const ImageEmitAccess& access, const SpirvBufferFormatInfo& info) {
-    if (access.mem.dataBits == 16u && info.byteSize != 2u) {
+    const bool floatStore = info.type == SpirvFormatComponentType::Float && access.inst.Opcode() == IrOpcode::ImageWrite;
+    if (access.mem.dataBits == 16u && info.byteSize != 2u && !floatStore) {
         ctx.Fail(access.inst, info.type == SpirvFormatComponentType::Float ? "reads or writes a converted float image with 16-bit data, which is not implemented" : "reads or writes a converted unorm image with 16-bit data, which is not implemented");
     }
     for (std::uint32_t component = 0; component < 4u; component++) {

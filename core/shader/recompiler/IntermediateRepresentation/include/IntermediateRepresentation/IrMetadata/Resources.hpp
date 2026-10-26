@@ -88,6 +88,7 @@ struct ImageResource {
     bool packed = false;
     bool fmaskCompatible = true;
     bool depthBitsCompatible = true;
+    bool convertedFloatDataCompatible = true;
     bool constantSwizzle = false;
     bool constantSwizzleCompatible = true;
     bool cubeFaceCompatible = true;

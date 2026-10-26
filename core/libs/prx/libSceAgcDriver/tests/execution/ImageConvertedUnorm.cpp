@@ -384,6 +384,59 @@ void CheckFloat36Store(AgcDriver::VulkanDevice& device, std::uint8_t* texels) {
     }
 }
 
+struct HalfStoreValue {
+    std::uint32_t bits;
+    std::uint32_t small10;
+    std::uint32_t small11;
+};
+
+constexpr std::array<HalfStoreValue, 20> HalfStoreValues{{
+    {0x0000u, 0x000u, 0x000u}, {0x8000u, 0x000u, 0x000u},
+    {0xbc00u, 0x000u, 0x000u}, {0x0001u, 0x000u, 0x000u},
+    {0x0010u, 0x000u, 0x001u}, {0x0020u, 0x001u, 0x002u},
+    {0x03ffu, 0x01fu, 0x03fu}, {0x0400u, 0x020u, 0x040u},
+    {0x3c00u, 0x1e0u, 0x3c0u}, {0x3c1fu, 0x1e0u, 0x3c1u},
+    {0x3c20u, 0x1e1u, 0x3c2u}, {0x7bffu, 0x3dfu, 0x7bfu},
+    {0x7c00u, 0x3e0u, 0x7c0u}, {0xfc00u, 0x000u, 0x000u},
+    {0x7c01u, 0x3e1u, 0x7c1u}, {0x7c10u, 0x3e1u, 0x7c1u},
+    {0x7c20u, 0x3e1u, 0x7c2u}, {0x7e00u, 0x3f0u, 0x7e0u},
+    {0xfc01u, 0x3e1u, 0x7c1u}, {0xfe00u, 0x3f0u, 0x7e0u},
+}};
+
+void CheckFloatD16Store(AgcDriver::VulkanDevice& device, std::uint8_t* texels, std::uint32_t format, std::uint32_t dmask, std::uint32_t swizzle, bool mixed) {
+    std::fill(texels, texels + Threads * 4u, static_cast<std::uint8_t>(0xa5u));
+    Input.fill(0u);
+    std::array<std::uint32_t, Threads> expected{};
+    for (std::uint32_t tid = 0; tid < Threads; ++tid) {
+        std::uint32_t packedIndex = 0;
+        for (std::uint32_t source = 0; source < 4u; ++source) {
+            if (((dmask >> source) & 1u) == 0u) continue;
+            const auto value = HalfStoreValues[(tid + source * 4u) % HalfStoreValues.size()];
+            Input[tid * 4u + packedIndex / 2u] |= value.bits << ((packedIndex % 2u) * 16u);
+            ++packedIndex;
+            const auto selector = (swizzle >> (source * 3u)) & 7u;
+            if (selector < 4u || selector > 6u) continue;
+            const auto component = selector - 4u;
+            const bool narrow = format == NativeFloatFormat ? component == 2u : component == 0u;
+            const auto offset = format == NativeFloatFormat ? component * 11u : component == 0u ? 0u : component * 11u - 1u;
+            expected[tid] |= (narrow ? value.small10 : value.small11) << offset;
+        }
+    }
+    alignas(256) const auto store = StoreCode(dmask, D16);
+    alignas(256) std::array<std::uint32_t, 23> mixedCode{};
+    std::copy(LoadXyz.begin(), LoadXyz.end() - 1, mixedCode.begin());
+    std::copy(store.begin(), store.end(), mixedCode.begin() + 14);
+    const auto code = mixed ? std::span<const std::uint32_t>(mixedCode) : std::span<const std::uint32_t>(store);
+    Run(device, code, TextureDescriptor(texels, format, swizzle, Threads), BufferDescriptor(Input.data(), static_cast<std::uint32_t>(Input.size() * 4u)), 1);
+    AgcDriver::Graphics::StorageTexture::FlushPending(reinterpret_cast<std::uintptr_t>(texels), Threads * 4u, nullptr, "test");
+    device.WaitIdle();
+    for (std::uint32_t tid = 0; tid < Threads; ++tid) {
+        std::uint32_t actual = 0;
+        std::memcpy(&actual, texels + tid * 4u, 4u);
+        Require(actual == expected[tid], "image_store D16 format " + std::to_string(format) + " dmask " + Hex(dmask) + " swizzle " + Hex(swizzle) + (mixed ? " mixed" : " store-only") + ": texel " + std::to_string(tid) + " is " + Hex(actual) + ", expected " + Hex(expected[tid]));
+    }
+}
+
 void CheckFloatSample(AgcDriver::VulkanDevice& device, const std::uint8_t* texels, const std::array<std::uint32_t, 4>& expected, const std::string& what, std::uint32_t format = FloatFormat) {
     Run(device, SampleLz, TextureDescriptor(texels, format, SwizzleXYZ1, Threads), PointSampler, 1);
     for (std::uint32_t tid = 0; tid < Threads; ++tid) {
@@ -602,6 +655,14 @@ int main(int argc, char** argv) {
         RequireRefused(*device, StoreD16, texels + StoreOffset, SwizzleXYZ1, BufferDescriptor(Input.data(), static_cast<std::uint32_t>(Input.size() * 4u)), "converted unorm image with 16-bit data", "image_store d16");
         RequireRefused(*device, LoadXyzw, texels, SwizzleXYZW, {}, "selects a channel the converted image format does not have", "image_load with DST_SEL X Y Z W");
         RequireRefused(*device, StoreXyz, texels + StoreOffset, SwizzleXYZW, BufferDescriptor(Input.data(), static_cast<std::uint32_t>(Input.size() * 4u)), "selects a channel the converted image format does not have", "image_store with DST_SEL X Y Z W");
+        for (const auto format : {NativeFloatFormat, FloatFormat}) {
+            for (const auto dmask : {0x7u, 0xfu, 0x5u}) {
+                for (const auto swizzle : {SwizzleXYZ1, SwizzleZYX1}) {
+                    CheckFloatD16Store(*device, texels + Float36Offset, format, dmask, swizzle, false);
+                    CheckFloatD16Store(*device, texels + Float36Offset, format, dmask, swizzle, true);
+                }
+            }
+        }
         std::puts("image converted unorm tests passed");
         return 0;
     } catch (const std::exception& error) {
