@@ -736,8 +736,6 @@ void* APS5_VABI lsearch_nid_postfix(const void* key, void* base, size_t* count,
     if (!count) throw std::invalid_argument("lsearch: null element count");
     if (!key || !base || !compare || size == 0)
         throw std::invalid_argument("lsearch: invalid arguments");
-    // Validate the existing span before touching memory or invoking the comparator;
-    // overflow here would mean (count-1)*size indexing is already unsafe.
     if (*count > std::numeric_limits<size_t>::max() / size)
         throw std::overflow_error("lsearch: array size overflow");
     auto* bytes = static_cast<unsigned char*>(base);
@@ -745,7 +743,6 @@ void* APS5_VABI lsearch_nid_postfix(const void* key, void* base, size_t* count,
         auto* element = bytes + index * size;
         if (compare(key, element) == 0) return element;
     }
-    // Only the append path needs room for one extra element.
     if (*count >= std::numeric_limits<size_t>::max() / size)
         throw std::overflow_error("lsearch: append capacity overflow");
     auto* tail = bytes + *count * size;

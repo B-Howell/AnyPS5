@@ -50,7 +50,6 @@ int main() {
         calls = 0;
         int probe = 5;
         auto* hit = static_cast<Record*>(lfind_nid_postfix(&probe, table.data(), &nel, sizeof(Record), Compare));
-        // Duplicate key=5 lives at indexes 2 and 3; lfind must return the first.
         Require(hit && hit == table.data() + 2 && calls == 3);
         Require(nel == table.size());
         Require(std::strcmp(hit->payload, "five") == 0);
@@ -72,7 +71,6 @@ int main() {
         Record present{5, "already"};
         calls = 0;
         auto* found = static_cast<Record*>(lsearch_nid_postfix(&present.key, buffer.data(), &nel, sizeof(Record), Compare));
-        // Match on duplicate key=5 returns the first occurrence and leaves memory intact.
         Require(found == buffer.data() + 2 && nel == records.size() && calls == 3);
         Require(std::memcmp(buffer.data(), before_lsearch.data(), sizeof(buffer)) == 0);
         Record fresh{4, "appended"};
@@ -81,7 +79,6 @@ int main() {
         Require(appended == buffer.data() + records.size());
         Require(appended->key == 4 && nel == records.size() + 1);
         Require(calls == static_cast<int>(records.size()));
-        // Full byte copy of the key, not just its first field.
         Require(std::memcmp(appended, &fresh, sizeof(Record)) == 0);
         std::size_t zero = 0;
         Record first{42, "first"};
@@ -105,7 +102,6 @@ int main() {
         try { lfind_nid_postfix(&key, records.data(), nullptr, sizeof(Record), Compare); }
         catch (const std::invalid_argument&) { caught = true; }
         Require(caught);
-        // Overflow guard must fire before the comparator or any element memory is touched.
         std::size_t huge = std::numeric_limits<std::size_t>::max();
         calls = 0;
         caught = false;
