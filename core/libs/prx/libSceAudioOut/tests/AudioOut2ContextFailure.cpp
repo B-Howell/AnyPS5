@@ -44,6 +44,8 @@ extern "C" Uint32 SDLCALL SDL_GetQueuedAudioSize(SDL_AudioDeviceID) { std::abort
 extern "C" int SDLCALL SDL_QueueAudio(SDL_AudioDeviceID, const void*, Uint32) { std::abort(); }
 
 int main() {
+    try { throw std::bad_alloc{}; }
+    catch (const std::bad_alloc&) {}
     AudioOut2ContextParam params{};
     sceAudioOut2ContextResetParam(&params);
     for (failAt = 0; failAt < 32; ++failAt) {
