@@ -324,6 +324,7 @@ CompiledVariant sampleVariant() {
     image.r128 = true;
     image.fmaskCompatible = false;
     image.depthBitsCompatible = false;
+    image.convertedFloatDataCompatible = false;
     image.constantSwizzle = true;
     image.constantSwizzleCompatible = false;
     image.cubeFaceCompatible = false;

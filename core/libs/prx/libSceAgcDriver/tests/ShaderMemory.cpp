@@ -8529,6 +8529,28 @@ void verifyArrayVolumeStoreMode() {
     expectFailure([&] { static_cast<void>(ResourceMaterializer::RuntimeImageMode(store, uintDescriptor, ResourceMaterializer::RuntimeImageModes(store))); }, "incompatible with the static runtime image interface", "3D image atomic on a 2D-array T# was accepted");
 }
 
+void verifyConvertedFloatD16Modes() {
+    using namespace ShaderRecompiler;
+    ImageResource image{};
+    image.resourceClass = ImageResourceClass::Storage;
+    image.dimension = RdnaImageDimension::Dim2D;
+    image.numericClass = IrTextureNumericClass::Float;
+    image.written = true;
+    image.read = true;
+    image.fmaskCompatible = false;
+    image.depthBitsCompatible = false;
+    for (const auto format : {36u, 43u}) {
+        const DescriptorValue descriptor{{0x100u, format << 20u, 0u, 0x900003acu, 0u, 0u, 0u, 0u}, 8u};
+        const auto modes = ResourceMaterializer::RuntimeImageModes(image);
+        require(ResourceMaterializer::TryRuntimeImageMode(image, descriptor, modes).mode.has_value(), "mixed 32-bit reads and D16 packed-float stores have no runtime mode");
+        auto unsupported = image;
+        unsupported.convertedFloatDataCompatible = false;
+        require(!ResourceMaterializer::TryRuntimeImageMode(unsupported, descriptor, ResourceMaterializer::RuntimeImageModes(unsupported)).mode.has_value(), "D16 packed-float reads have a runtime mode");
+    }
+    const DescriptorValue unorm{{0x100u, 30u << 20u, 0u, 0x900003acu, 0u, 0u, 0u, 0u}, 8u};
+    require(!ResourceMaterializer::TryRuntimeImageMode(image, unorm, ResourceMaterializer::RuntimeImageModes(image)).mode.has_value(), "D16 converted unorm stores have a runtime mode");
+}
+
 void verifySrgbDepthCompareModes() {
     using namespace ShaderRecompiler;
     for (const auto decodeFormats : {0u, 1u, 2u, 3u}) {
@@ -8555,6 +8577,10 @@ int main(int argc, char** argv) {
         setenv("ANYPS5_NO_SHADER_CACHE", "1", 1);
 #endif
         using namespace ShaderRecompiler;
+        if (argc == 2 && std::string_view(argv[1]) == "--converted-float-d16-modes") {
+            verifyConvertedFloatD16Modes();
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--specialized-bda-abi") {
             verifySpecializedBufferAtomicBindings(true);
             std::cout << "Specialized programs retain the BDA ABI only while a fault buffer remains\n";
@@ -8738,6 +8764,7 @@ int main(int argc, char** argv) {
         verifySamplerTableDeduplication();
         verifyDynamicStorageMipChain();
         verifySrgbDepthCompareModes();
+        verifyConvertedFloatD16Modes();
         verifyQuadMaskNeighbourReads();
         verifyCoherentGds();
 #if ANYPS5_ENABLE_SPIRV_TOOLS
