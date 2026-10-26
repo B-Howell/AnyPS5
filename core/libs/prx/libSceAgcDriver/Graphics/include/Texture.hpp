@@ -186,9 +186,9 @@ public:
     };
 
     void assign(std::size_t size, bool flag) {
-        count = size;
         words.assign((size + WordBits - 1u) / WordBits, flag ? ~std::uint64_t{0} : 0u);
         if (flag && size % WordBits != 0u) words.back() &= (std::uint64_t{1} << (size % WordBits)) - 1u;
+        count = size;
     }
     void clear() {
         words.clear();
