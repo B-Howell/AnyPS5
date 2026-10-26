@@ -33,6 +33,7 @@ static constexpr int Append = 0x0008;
 static constexpr int CreateWriteAppend = 0x0209;
 static constexpr int Truncate = 0x0400;
 static constexpr int CloseOnExec = 0x00100000;
+static constexpr int Directory = 0x00020000;
 static constexpr int GetDescriptorFlags = 1;
 static constexpr int GetStatusFlags = 3;
 static constexpr int FromStart = 0;
@@ -145,6 +146,17 @@ int main() {
     stream = Reopen(random, "r");
     char read[16]{};
     Require(sceKernelRead(random, read, sizeof(read)) == 10);
+    Require(std::string(read, 10) == "01ABCD6789");
+    Require(fclose_nid_postfix(stream) == 0);
+
+    const int directory = sceKernelOpen(".", Directory, 0);
+    Require(directory >= 0);
+    stream = fdopen_nid_postfix(directory, "r");
+    Require(stream != nullptr);
+    Require(fclose_nid_postfix(stream) == 0);
+
+    stream = Reopen(directory, "r");
+    Require(sceKernelRead(directory, read, sizeof(read)) == 10);
     Require(std::string(read, 10) == "01ABCD6789");
     Require(fclose_nid_postfix(stream) == 0);
 
