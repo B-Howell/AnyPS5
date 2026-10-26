@@ -715,6 +715,41 @@ void* APS5_VABI bsearch_nid_postfix(const void* key, const void* base, size_t co
     return nullptr;
 }
 
+static void HeapSiftDown(unsigned char* base, size_t root, size_t count, size_t size,
+    unsigned char* scratch, GuestCompare compare) {
+    std::memcpy(scratch, base + root * size, size);
+    size_t parent = root;
+    for (;;) {
+        size_t child = 2 * parent + 1;
+        if (child >= count) break;
+        if (child + 1 < count && compare(base + child * size, base + (child + 1) * size) < 0) ++child;
+        if (compare(scratch, base + child * size) >= 0) break;
+        std::memcpy(base + parent * size, base + child * size, size);
+        parent = child;
+    }
+    std::memcpy(base + parent * size, scratch, size);
+}
+
+int APS5_VABI heapsort_nid_postfix(void* base, size_t count, size_t size, GuestCompare compare) {
+    if (count <= 1) return 0;
+    if (size == 0) { errno = 22; return -1; }
+    if (!compare) throw std::invalid_argument("heapsort: null comparator");
+    if (!base) throw std::invalid_argument("heapsort: null base");
+    if (count > std::numeric_limits<size_t>::max() / size) throw std::overflow_error("heapsort: array size overflow");
+    auto* const bytes = static_cast<unsigned char*>(base);
+    auto* const scratch = static_cast<unsigned char*>(malloc_nid_postfix(size));
+    if (!scratch) return -1;
+    for (size_t root = count / 2; root-- > 0; ) HeapSiftDown(bytes, root, count, size, scratch, compare);
+    for (size_t end = count - 1; end > 0; --end) {
+        std::memcpy(scratch, bytes, size);
+        std::memcpy(bytes, bytes + end * size, size);
+        std::memcpy(bytes + end * size, scratch, size);
+        HeapSiftDown(bytes, 0, end, size, scratch, compare);
+    }
+    free_nid_postfix(scratch);
+    return 0;
+}
+
 int APS5_VABI mergesort_nid_postfix(void* base, size_t count, size_t size, GuestCompare compare) {
     if (size < 4) {
         errno = 22;

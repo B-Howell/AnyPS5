@@ -186,6 +186,84 @@ bool ExpectSorted(std::size_t size, std::size_t count) {
     return true;
 }
 
+const unsigned char* heapsortBase = nullptr;
+const unsigned char* heapsortLimit = nullptr;
+std::size_t heapsortStride = 0;
+bool heapsortArgumentsValid = true;
+int heapsortCompareCalls = 0;
+
+int APS5_VABI RecordingCompareKeys(const void* left, const void* right) {
+    ++heapsortCompareCalls;
+    const auto inArray = [](const unsigned char* candidate) {
+        return candidate >= heapsortBase && candidate < heapsortLimit
+            && static_cast<std::size_t>(candidate - heapsortBase) % heapsortStride == 0;
+    };
+    const bool leftInArray = inArray(static_cast<const unsigned char*>(left));
+    const bool rightInArray = inArray(static_cast<const unsigned char*>(right));
+    if (!leftInArray && !rightInArray) heapsortArgumentsValid = false;
+    return CompareKeys(left, right);
+}
+
+bool CheckHeapsort() {
+    InitializeHeap();
+    bool correct = true;
+    for (const std::size_t count : {0, 1, 2, 3, 7, 16, 33, 1000}) {
+        std::vector<Element> elements;
+        for (std::size_t index = 0; index < count; ++index) elements.push_back({static_cast<int>((index * 7919) % 11), static_cast<int>(index)});
+        std::vector<int> counts(11);
+        for (const auto& element : elements) ++counts[element.key];
+        correct &= heapsort_nid_postfix(elements.data(), count, sizeof(Element), CompareKeys) == 0;
+        for (std::size_t index = 1; index < count; ++index) correct &= elements[index - 1].key <= elements[index].key;
+        for (const auto& element : elements) --counts[element.key];
+        for (const int remaining : counts) correct &= remaining == 0;
+    }
+    {
+        unsigned char bytes[8] = {5, 2, 4, 1, 3, 2, 5, 1};
+        correct &= heapsort_nid_postfix(bytes, 8, 1, CompareFirstByte) == 0;
+        for (std::size_t index = 1; index < 8; ++index) correct &= bytes[index - 1] <= bytes[index];
+    }
+    {
+        struct ThreeByte { unsigned char key; unsigned char tag[2]; };
+        ThreeByte records[6] = {{4, {1,0}}, {1, {2,0}}, {4, {3,0}}, {2, {4,0}}, {0, {5,0}}, {3, {6,0}}};
+        correct &= heapsort_nid_postfix(records, 6, sizeof(ThreeByte), CompareFirstByte) == 0;
+        for (std::size_t index = 1; index < 6; ++index) correct &= records[index - 1].key <= records[index].key;
+    }
+    {
+        std::vector<Element> elements;
+        for (int index = 0; index < 64; ++index) elements.push_back({(index * 11) % 7, index});
+        heapsortBase = reinterpret_cast<const unsigned char*>(elements.data());
+        heapsortLimit = heapsortBase + elements.size() * sizeof(Element);
+        heapsortStride = sizeof(Element);
+        heapsortArgumentsValid = true;
+        heapsortCompareCalls = 0;
+        correct &= heapsort_nid_postfix(elements.data(), elements.size(), sizeof(Element), RecordingCompareKeys) == 0 && heapsortArgumentsValid && heapsortCompareCalls > 0;
+        for (std::size_t index = 1; index < elements.size(); ++index) correct &= elements[index - 1].key <= elements[index].key;
+    }
+    unsigned char zeroSize[3] = {3, 1, 2};
+    *__error_nid_postfix() = 0;
+    correct &= heapsort_nid_postfix(zeroSize, 3, 0, CompareFirstByte) == -1 && *__error_nid_postfix() == 22 && zeroSize[0] == 3;
+    correct &= heapsort_nid_postfix(nullptr, 0, 4, CompareKeys) == 0;
+    correct &= heapsort_nid_postfix(nullptr, 1, 4, CompareKeys) == 0;
+    correct &= heapsort_nid_postfix(nullptr, 1, 0, CompareKeys) == 0;
+    bool caught = false;
+    try { heapsort_nid_postfix(nullptr, 2, sizeof(Element), CompareKeys); } catch (const std::invalid_argument&) { caught = true; }
+    correct &= caught;
+    caught = false;
+    Element pair[2] = {{2, 0}, {1, 1}};
+    try { heapsort_nid_postfix(pair, 2, sizeof(Element), nullptr); } catch (const std::invalid_argument&) { caught = true; }
+    correct &= caught;
+    caught = false;
+    try { heapsort_nid_postfix(pair, std::numeric_limits<std::size_t>::max(), sizeof(Element), CompareKeys); }
+    catch (const std::overflow_error&) { caught = true; }
+    correct &= caught;
+    *__error_nid_postfix() = 0;
+    failAllocation = true;
+    correct &= heapsort_nid_postfix(pair, 2, sizeof(Element), CompareKeys) == -1 && pair[0].key == 2 && pair[1].key == 1;
+    failAllocation = false;
+    if (!correct) std::fprintf(stderr, "heapsort failed\n");
+    return correct;
+}
+
 bool CheckMergesort() {
     InitializeHeap();
     bool correct = true;
@@ -228,6 +306,7 @@ int main() {
     for (const std::size_t size : {1, 3, 8, 24})
         for (const std::size_t count : {0, 1, 2, 6, 7, 8, 40, 41, 1000})
             correct &= ExpectSorted(size, count);
+    correct &= CheckHeapsort();
     correct &= CheckMergesort();
     return correct ? 0 : 1;
 }
