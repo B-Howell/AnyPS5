@@ -186,20 +186,21 @@ bool ExpectSorted(std::size_t size, std::size_t count) {
     return true;
 }
 
-const unsigned char* heapsortBase = nullptr;
-const unsigned char* heapsortLimit = nullptr;
+std::uintptr_t heapsortBase = 0;
+std::uintptr_t heapsortLimit = 0;
 std::size_t heapsortStride = 0;
 bool heapsortArgumentsValid = true;
 int heapsortCompareCalls = 0;
 
 int APS5_VABI RecordingCompareKeys(const void* left, const void* right) {
     ++heapsortCompareCalls;
-    const auto inArray = [](const unsigned char* candidate) {
-        return candidate >= heapsortBase && candidate < heapsortLimit
-            && static_cast<std::size_t>(candidate - heapsortBase) % heapsortStride == 0;
+    const auto inArray = [](const void* candidate) {
+        const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(candidate);
+        return address >= heapsortBase && address < heapsortLimit
+            && (address - heapsortBase) % heapsortStride == 0;
     };
-    const bool leftInArray = inArray(static_cast<const unsigned char*>(left));
-    const bool rightInArray = inArray(static_cast<const unsigned char*>(right));
+    const bool leftInArray = inArray(left);
+    const bool rightInArray = inArray(right);
     if (!leftInArray && !rightInArray) heapsortArgumentsValid = false;
     return CompareKeys(left, right);
 }
@@ -231,9 +232,9 @@ bool CheckHeapsort() {
     {
         std::vector<Element> elements;
         for (int index = 0; index < 64; ++index) elements.push_back({(index * 11) % 7, index});
-        heapsortBase = reinterpret_cast<const unsigned char*>(elements.data());
-        heapsortLimit = heapsortBase + elements.size() * sizeof(Element);
+        heapsortBase = reinterpret_cast<std::uintptr_t>(elements.data());
         heapsortStride = sizeof(Element);
+        heapsortLimit = heapsortBase + elements.size() * heapsortStride;
         heapsortArgumentsValid = true;
         heapsortCompareCalls = 0;
         correct &= heapsort_nid_postfix(elements.data(), elements.size(), sizeof(Element), RecordingCompareKeys) == 0 && heapsortArgumentsValid && heapsortCompareCalls > 0;
