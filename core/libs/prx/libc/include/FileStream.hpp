@@ -5,6 +5,8 @@
 #include <cerrno>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -59,10 +61,22 @@ static constexpr const char* FOPEN_MSG_OPEN_FAILED = "open failed";
 #ifndef _WIN32
 extern "C" int KeepHostStandardError_nid_no_patch();
 #endif
+extern "C" int KeepHostStandardOutput_nid_no_patch();
+
+class FileStream;
+extern "C" std::recursive_mutex& FileStreamRegistryMutex_nid_no_patch();
+extern "C" FileStream*& FileStreamRegistryHead_nid_no_patch();
+void RegisterFileStream_nid_no_patch(FileStream* stream, std::shared_ptr<std::recursive_mutex> preallocatedGate = {});
+void UnlinkFileStream_nid_no_patch(FileStream* stream);
+std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream* stream);
+void UnpinFileStream_nid_no_patch(FileStream* stream);
+void RetireFileStream_nid_no_patch(FileStream* stream);
+std::pair<FileStream*, std::shared_ptr<std::recursive_mutex>>
+    PinNextFileStream_nid_no_patch(std::uint64_t& cursor);
+void DetachFileStreamAliasesForNative_nid_no_patch(FileStream* source, std::FILE* native);
+void SynchronizeFileStreamAliases_nid_no_patch(FileStream* source);
 
 class FileStream {
-    // Only the macro-accessed FreeBSD prefix is exposed. The remaining guest
-    // FILE area is reserved; host state lives beyond it and is never a guest FILE*.
     GuestFilePrefix _guest{};
     std::byte _reserved[256 - sizeof(GuestFilePrefix)]{};
     std::FILE* _handle;
@@ -70,9 +84,36 @@ class FileStream {
     bool guestError = false;
     bool randomDevice = false;
     bool directory = false;
+    FileStream* _nextStream_nid_no_patch = nullptr;
+    std::shared_ptr<std::recursive_mutex> _gate_nid_no_patch;
+    std::uint64_t _registryId_nid_no_patch = 0;
+    std::uint32_t _pinCount_nid_no_patch = 0;
+    bool _registered_nid_no_patch = false;
+    bool _retired_nid_no_patch = false;
+
+    friend void RegisterFileStream_nid_no_patch(FileStream*, std::shared_ptr<std::recursive_mutex>);
+    friend void UnlinkFileStream_nid_no_patch(FileStream*);
+    friend std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream*);
+    friend void UnpinFileStream_nid_no_patch(FileStream*);
+    friend void RetireFileStream_nid_no_patch(FileStream*);
+    friend std::pair<FileStream*, std::shared_ptr<std::recursive_mutex>>
+        PinNextFileStream_nid_no_patch(std::uint64_t&);
+    friend void DetachFileStreamAliasesForNative_nid_no_patch(FileStream*, std::FILE*);
+    friend void SynchronizeFileStreamAliases_nid_no_patch(FileStream*);
+
+    std::FILE* LoadHandleAtomic_nid_no_patch() const {
+        return __atomic_load_n(const_cast<std::FILE* const*>(&_handle), __ATOMIC_ACQUIRE);
+    }
+
+    void StoreHandleAtomic_nid_no_patch(std::FILE* value) {
+        __atomic_store_n(&_handle, value, __ATOMIC_RELEASE);
+    }
 
 public:
-    explicit FileStream(std::FILE* handle, bool dynamic = false) : _handle(handle), _dynamic(dynamic) {
+    enum class Registration { Immediate, Deferred };
+
+    explicit FileStream(std::FILE* handle, bool dynamic = false, Registration registration = Registration::Immediate)
+        : _handle(handle), _dynamic(dynamic) {
         if (!_handle) throw std::runtime_error("FileStream: null handle");
 #ifdef _WIN32
         PrepareStandardStreams_nid_no_patch();
@@ -84,18 +125,35 @@ public:
         const int descriptor = ::fileno(handle);
 #endif
         _guest.descriptor = descriptor >= 0 && descriptor <= 32767 ? static_cast<std::int16_t>(descriptor) : -1;
+        if (registration == Registration::Immediate) RegisterFileStream_nid_no_patch(this);
     }
+
+    ~FileStream() {
+        if (_registered_nid_no_patch) UnlinkFileStream_nid_no_patch(this);
+    }
+
+    void Register_nid_no_patch(std::shared_ptr<std::recursive_mutex> preallocatedGate = {}) {
+        RegisterFileStream_nid_no_patch(this, std::move(preallocatedGate));
+    }
+
+    static std::recursive_mutex& RegistryMutex_nid_no_patch() { return FileStreamRegistryMutex_nid_no_patch(); }
+    static FileStream* RegistryHead_nid_no_patch() { return FileStreamRegistryHead_nid_no_patch(); }
+    FileStream* NextStream_nid_no_patch() const { return _nextStream_nid_no_patch; }
+    std::FILE* RawHandle_nid_no_patch() const { return LoadHandleAtomic_nid_no_patch(); }
+    std::shared_ptr<std::recursive_mutex> GatePtr_nid_no_patch() const { return _gate_nid_no_patch; }
+    bool IsRetired_nid_no_patch() const { return _retired_nid_no_patch; }
 
     FileStream(const FileStream&) = delete;
     FileStream& operator=(const FileStream&) = delete;
 
     std::FILE* GetHandle() const {
-        if (!_handle) throw std::runtime_error("FileStream: closed stream");
-        return _handle;
+        auto* h = LoadHandleAtomic_nid_no_patch();
+        if (!h) throw std::runtime_error("FileStream: closed stream");
+        return h;
     }
 
     bool IsOpen() const {
-        return _handle != nullptr;
+        return LoadHandleAtomic_nid_no_patch() != nullptr;
     }
 
     bool IsDynamic() const {
@@ -104,11 +162,12 @@ public:
 
     GuestFilePrefix& GuestState() { return _guest; }
     bool IsHostStandard() const {
-        return _handle == stdin || _handle == stdout || _handle == stderr;
+        auto* h = LoadHandleAtomic_nid_no_patch();
+        return h == stdin || h == stdout || h == stderr;
     }
 
     void Detach() {
-        _handle = nullptr;
+        StoreHandleAtomic_nid_no_patch(nullptr);
         _guest.flags = 0;
         _guest.descriptor = -1;
     }
@@ -148,6 +207,10 @@ public:
     bool Reopen(const std::filesystem::path& filename, const char* mode,
         [[maybe_unused]] std::FILE* (*open)(const std::filesystem::path&, const std::string&) = nullptr) {
         auto* previous = GetHandle();
+        struct SynchronizeAliases {
+            FileStream* source;
+            ~SynchronizeAliases() { SynchronizeFileStreamAliases_nid_no_patch(source); }
+        } synchronizeAliases{this};
         _guest = {};
         guestError = false;
         randomDevice = false;
@@ -160,16 +223,26 @@ public:
         GuestFileLockForget_nid_no_patch(replaced);
         if (open && !filename.empty()) {
             if (!IsHostStandard()) {
-                _handle = nullptr;
-                std::fclose(previous);
-                _handle = open(filename, mode);
+                StoreHandleAtomic_nid_no_patch(nullptr);
+                std::erase(wideMode, L'x');
+                std::unique_ptr<std::FILE, int (*)(std::FILE*)> original(
+                    ::_wfreopen(L"NUL", wideMode.c_str(), previous), std::fclose);
+                if (original) {
+                    std::unique_ptr<std::FILE, int (*)(std::FILE*)> replacement(open(filename, mode), std::fclose);
+                    if (replacement && ::_dup2(::_fileno(replacement.get()), ::_fileno(original.get())) == 0)
+                        StoreHandleAtomic_nid_no_patch(original.release());
+                    const int error = errno;
+                    replacement.reset();
+                    original.reset();
+                    errno = error;
+                }
             } else {
                 std::wstring resetMode;
                 for (const char character : std::string_view(mode))
                     if (character != 'x') resetMode.push_back(static_cast<unsigned char>(character));
                 const int kept = DuplicateHostDescriptor_nid_no_patch(replaced);
                 if (kept >= 0) ::_lock_file(previous);
-                _handle = nullptr;
+                StoreHandleAtomic_nid_no_patch(nullptr);
                 try {
                     std::FILE* const replacement = open(filename, mode);
                     if (replacement) {
@@ -177,7 +250,7 @@ public:
                             const int moved = ::_dup2(_fileno(replacement), replaced);
                             const int error = errno;
                             std::fclose(replacement);
-                            if (moved == 0) _handle = previous;
+                            if (moved == 0) StoreHandleAtomic_nid_no_patch(previous);
                             else errno = error;
                         } else {
                             const int error = errno;
@@ -195,7 +268,7 @@ public:
         } else {
             const int kept = IsHostStandard() ? DuplicateHostDescriptor_nid_no_patch(replaced) : -1;
             if (kept >= 0) ::_lock_file(previous);
-            _handle = ::_wfreopen(filename.c_str(), wideMode.c_str(), previous);
+            StoreHandleAtomic_nid_no_patch(::_wfreopen(filename.c_str(), wideMode.c_str(), previous));
             if (kept >= 0) RestoreHostStandard(previous, kept);
         }
         KeepStandardHandle_nid_no_patch(replaced, standard);
@@ -203,15 +276,16 @@ public:
         if (::fileno(previous) == 2) KeepHostStandardError_nid_no_patch();
         const int kept = IsHostStandard() ? DuplicateHostDescriptor_nid_no_patch(::fileno(previous)) : -1;
         if (kept >= 0) ::flockfile(previous);
-        _handle = std::freopen(filename.c_str(), mode, previous);
+        StoreHandleAtomic_nid_no_patch(std::freopen(filename.c_str(), mode, previous));
         if (kept >= 0) RestoreHostStandard(previous, kept);
 #endif
-        if (!_handle) return false;
+        auto* currentHandle = LoadHandleAtomic_nid_no_patch();
+        if (!currentHandle) return false;
         _guest.flags = 0x10;
 #ifdef _WIN32
-        const int descriptor = _fileno(_handle);
+        const int descriptor = _fileno(currentHandle);
 #else
-        const int descriptor = ::fileno(_handle);
+        const int descriptor = ::fileno(currentHandle);
 #endif
         _guest.descriptor = descriptor >= 0 && descriptor <= 32767 ? static_cast<std::int16_t>(descriptor) : -1;
         return true;
@@ -225,21 +299,23 @@ public:
         while (!__atomic_compare_exchange_n(&_guest.flags, &old, next, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     }
     void SyncStatus() {
-        if (!_handle) return;
-        PublishStatus(std::feof(GetHandle()) != 0, std::ferror(GetHandle()) != 0 || guestError);
+        auto* h = LoadHandleAtomic_nid_no_patch();
+        if (!h) return;
+        PublishStatus(std::feof(h) != 0, std::ferror(h) != 0 || guestError);
     }
 
     void SyncUnlockedStatus() {
-        if (!_handle) return;
+        auto* h = LoadHandleAtomic_nid_no_patch();
+        if (!h) return;
 #ifdef _WIN32
-        const bool endOfFile = std::feof(GetHandle()) != 0;
-        const bool error = std::ferror(GetHandle()) != 0;
+        const bool endOfFile = std::feof(h) != 0;
+        const bool error = std::ferror(h) != 0;
 #elif defined(__APPLE__)
-        const bool endOfFile = feof_unlocked(GetHandle()) != 0;
-        const bool error = ferror_unlocked(GetHandle()) != 0;
+        const bool endOfFile = feof_unlocked(h) != 0;
+        const bool error = ferror_unlocked(h) != 0;
 #else
-        const bool endOfFile = feof_unlocked(GetHandle()) != 0;
-        const bool error = ferror_unlocked(GetHandle()) != 0;
+        const bool endOfFile = feof_unlocked(h) != 0;
+        const bool error = ferror_unlocked(h) != 0;
 #endif
         PublishStatus(endOfFile, error || guestError);
     }
@@ -328,22 +404,38 @@ public:
     }
 
     void ClearError() {
-        if (!_handle) return;
-        std::clearerr(GetHandle());
+        auto* h = LoadHandleAtomic_nid_no_patch();
+        if (!h) return;
+        std::clearerr(h);
         guestError = false;
         SyncStatus();
     }
 
-    int Close() {
-        GetHandle();
+    int CloseNativeUnderGate_nid_no_patch() {
+        auto* native = LoadHandleAtomic_nid_no_patch();
+        if (!native) { errno = 9; return -1; }
 #ifdef _WIN32
-        GuestFileLockForget_nid_no_patch(::_fileno(_handle));
-        if (std::exchange(directory, false)) ForgetDirectoryStream_nid_no_patch(::_fileno(_handle));
+        const int descriptor = ::_fileno(native);
+        GuestFileLockForget_nid_no_patch(descriptor);
+        if (std::exchange(directory, false)) ForgetDirectoryStream_nid_no_patch(descriptor);
 #endif
-        const int result = std::fclose(std::exchange(_handle, nullptr));
+        StoreHandleAtomic_nid_no_patch(nullptr);
         _guest.flags = 0;
         _guest.descriptor = -1;
-        return result;
+        DetachFileStreamAliasesForNative_nid_no_patch(this, native);
+        return std::fclose(native);
+    }
+
+    int Close() {
+        auto gate = PinFileStreamIfValid_nid_no_patch(this);
+        if (!gate) { errno = 9; return -1; }
+        struct PinGuard {
+            FileStream* stream;
+            ~PinGuard() { UnpinFileStream_nid_no_patch(stream); }
+        } pinGuard{this};
+        std::lock_guard<std::recursive_mutex> gateLock(*gate);
+        if (!LoadHandleAtomic_nid_no_patch()) { errno = 9; return -1; }
+        return CloseNativeUnderGate_nid_no_patch();
     }
 };
 static_assert(std::is_standard_layout_v<FileStream>);
@@ -357,6 +449,31 @@ inline std::FILE* GetNativeStream(FileStream* stream) {
     auto* handle = GetStreamHandle(stream);
     if (stream->IsRandomDevice()) throw std::runtime_error("FileStream: this function is not implemented on a /dev/random or /dev/urandom stream");
     return handle;
+}
+
+class FileStreamLease_nid_no_patch {
+    FileStream* _stream;
+    std::shared_ptr<std::recursive_mutex> _gate;
+public:
+    FileStreamLease_nid_no_patch(FileStream* stream, std::shared_ptr<std::recursive_mutex> gate)
+        : _stream(stream), _gate(std::move(gate)) {}
+    FileStreamLease_nid_no_patch(const FileStreamLease_nid_no_patch&) = delete;
+    FileStreamLease_nid_no_patch& operator=(const FileStreamLease_nid_no_patch&) = delete;
+    FileStreamLease_nid_no_patch(FileStreamLease_nid_no_patch&& other) noexcept
+        : _stream(other._stream), _gate(std::move(other._gate)) { other._stream = nullptr; }
+    FileStreamLease_nid_no_patch& operator=(FileStreamLease_nid_no_patch&&) = delete;
+    ~FileStreamLease_nid_no_patch() {
+        if (_stream) UnpinFileStream_nid_no_patch(_stream);
+    }
+    FileStream* Stream() const { return _stream; }
+    const std::shared_ptr<std::recursive_mutex>& Gate() const { return _gate; }
+    bool Valid() const { return _stream != nullptr && _gate != nullptr; }
+};
+
+inline FileStreamLease_nid_no_patch AcquireFileStreamLease_nid_no_patch(FileStream* stream) {
+    auto gate = PinFileStreamIfValid_nid_no_patch(stream);
+    FileStream* const pinned = gate ? stream : nullptr;
+    return FileStreamLease_nid_no_patch(pinned, std::move(gate));
 }
 
 extern "C" {
