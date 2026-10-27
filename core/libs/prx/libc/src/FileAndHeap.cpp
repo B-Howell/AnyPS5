@@ -718,9 +718,9 @@ void* APS5_VABI bsearch_nid_postfix(const void* key, const void* base, size_t co
 void* APS5_VABI lfind_nid_postfix(const void* key, const void* base, size_t* count,
     size_t size, int (APS5_VABI *compare)(const void*, const void*)) {
     if (!count) throw std::invalid_argument("lfind: null element count");
+    if (*count == 0) return nullptr;
     if (!key || !base || !compare || size == 0)
         throw std::invalid_argument("lfind: invalid arguments");
-    if (*count == 0) return nullptr;
     if (*count > std::numeric_limits<size_t>::max() / size)
         throw std::overflow_error("lfind: array size overflow");
     const auto* bytes = static_cast<const unsigned char*>(base);

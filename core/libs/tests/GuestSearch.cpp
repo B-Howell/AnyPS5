@@ -61,6 +61,9 @@ int main() {
         calls = 0;
         Require(lfind_nid_postfix(&probe, table.data(), &empty, sizeof(Record), Compare) == nullptr);
         Require(calls == 0);
+        calls = 0;
+        Require(lfind_nid_postfix(&probe, nullptr, &empty, sizeof(Record), Compare) == nullptr);
+        Require(calls == 0);
     }
 
     {
