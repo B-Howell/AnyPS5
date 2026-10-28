@@ -388,51 +388,62 @@ static FileStream* OpenDirectoryStream(const std::filesystem::path& path) {
 
 FileStream* APS5_VABI freopen_nid_postfix(const char* filename, const char* mode, FileStream* stream) {
     if (!stream || !mode) { errno = 22; return nullptr; }
-    if (!filename) { errno = 45; return nullptr; } // Mode-only reopening is not supported.
-    const auto parsed = ParseFileMode(mode);
-    if (!parsed) { errno = 22; return nullptr; }
-    auto lease = AcquireFileStreamLease_nid_no_patch(stream);
+    auto lease = AcquireFileStreamLease_nid_no_patch(stream, true);
     if (!lease.Valid()) { errno = 9; return nullptr; }
     try {
+        std::lock_guard<std::recursive_mutex> gateLock(*lease.Gate());
+        if (!filename) { errno = stream->IsOpen() ? 45 : 9; return nullptr; }
+        const auto parsed = ParseFileMode(mode);
+        if (!parsed) { errno = 22; return nullptr; }
         std::filesystem::path path;
         if (const int error = *filename ? ResolvePathError_nid_no_patch(filename, path) : 2) {
-            {
-                std::lock_guard<std::recursive_mutex> gateLock(*lease.Gate());
-                if (stream->IsHostStandard()) stream->Detach();
-                else if (stream->IsOpen()) static_cast<void>(stream->CloseNativeUnderGate_nid_no_patch());
-                RetireFileStream_nid_no_patch(stream);
-            }
+            if (stream->IsHostStandard()) stream->Detach();
+            else if (stream->IsOpen()) static_cast<void>(stream->CloseNativeUnderGate_nid_no_patch());
+            RetireFileStream_nid_no_patch(stream);
             errno = error;
             return nullptr;
         }
-        bool reopened;
+        const auto reservation = ReserveFileStreamReopen_nid_no_patch(stream);
+        if (!reservation) { errno = 9; return nullptr; }
+        struct ReopenCleanup {
+            FileStream* stream;
+            std::uint64_t reservation;
+            bool armed = false;
+            bool committed = false;
+            ~ReopenCleanup() {
+                if (committed) return;
+                const int error = errno;
+                if (armed) {
+                    if (stream->IsOpen()) static_cast<void>(stream->CloseNativeUnderGate_nid_no_patch());
+                    RetireFileStream_nid_no_patch(stream);
+                }
+                CancelFileStreamReopenReservation_nid_no_patch(reservation);
+                errno = error;
+            }
+        } cleanup{stream, *reservation};
+        bool reopened = stream->Reopen(path, parsed->native.c_str(), OpenNative);
+        cleanup.armed = reopened;
         int captured = 0;
-        {
-            std::lock_guard<std::recursive_mutex> gateLock(*lease.Gate());
-            if (!stream->IsOpen()) { errno = 9; return nullptr; }
-            reopened = stream->Reopen(path, parsed->native.c_str(), OpenNative);
 #ifdef _WIN32
-            if (reopened && parsed->append && !AppendOnlyDescriptor(_fileno(stream->GetHandle()))) {
-                captured = errno;
-                static_cast<void>(stream->CloseNativeUnderGate_nid_no_patch());
-                reopened = false;
-            }
+        if (reopened && parsed->append && !AppendOnlyDescriptor(_fileno(stream->GetHandle()))) {
+            captured = errno;
+            static_cast<void>(stream->CloseNativeUnderGate_nid_no_patch());
+            reopened = false;
+        }
 #endif
-            if (reopened) {
-                if (parsed->append) static_cast<void>(std::fseek(stream->GetHandle(), 0, SEEK_END));
-                if (!path.empty() && parsed->writes) RecordWrittenPath_nid_no_patch(path);
-            } else {
-                if (captured == 0) captured = errno;
-                RetireFileStream_nid_no_patch(stream);
-            }
+        if (reopened) {
+            if (parsed->append) static_cast<void>(std::fseek(stream->GetHandle(), 0, SEEK_END));
+            if (!path.empty() && parsed->writes) RecordWrittenPath_nid_no_patch(path);
+            PublishFileStreamReopen_nid_no_patch(stream, *reservation);
+            cleanup.committed = true;
+            return stream;
         }
-        if (!reopened) {
-            int error = OpenFailure(path, parsed->writes, captured);
-            if (error == 2) error = NotFoundError_nid_no_patch(path);
-            errno = error;
-            return nullptr;
-        }
-        return stream;
+        if (captured == 0) captured = errno;
+        RetireFileStream_nid_no_patch(stream);
+        int error = OpenFailure(path, parsed->writes, captured);
+        if (error == 2) error = NotFoundError_nid_no_patch(path);
+        errno = error;
+        return nullptr;
     } catch (const std::bad_alloc&) { errno = 12; return nullptr; }
       catch (const std::filesystem::filesystem_error&) { errno = 5; return nullptr; }
 }
@@ -520,6 +531,11 @@ std::uint64_t& NextRegistryIdRef_nid_no_patch() {
     return next;
 }
 
+std::uint64_t& ReservedRegistryIdsRef_nid_no_patch() {
+    static std::uint64_t reserved = 0;
+    return reserved;
+}
+
 }
 
 void RegisterFileStream_nid_no_patch(FileStream* stream, std::shared_ptr<std::recursive_mutex> preallocatedGate) {
@@ -533,7 +549,8 @@ void RegisterFileStream_nid_no_patch(FileStream* stream, std::shared_ptr<std::re
     }
     if (!gate) gate = preallocatedGate ? std::move(preallocatedGate) : std::make_shared<std::recursive_mutex>();
     auto& nextId = NextRegistryIdRef_nid_no_patch();
-    if (nextId == 0) throw std::runtime_error("FileStream: registry id overflow");
+    if (nextId == 0 || ReservedRegistryIdsRef_nid_no_patch() > std::numeric_limits<std::uint64_t>::max() - nextId)
+        throw std::runtime_error("FileStream: registry id overflow");
     stream->_gate_nid_no_patch = std::move(gate);
     stream->_registryId_nid_no_patch = nextId++;
     stream->_nextStream_nid_no_patch = FileStreamRegistryHead_nid_no_patch();
@@ -554,12 +571,12 @@ void UnlinkFileStream_nid_no_patch(FileStream* stream) {
     }
 }
 
-std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream* stream) {
+std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream* stream, bool allowRetiredStatic) {
     if (!stream) return nullptr;
     std::lock_guard<std::recursive_mutex> lock(FileStreamRegistryMutex_nid_no_patch());
     for (FileStream* cur = FileStreamRegistryHead_nid_no_patch(); cur != nullptr; cur = cur->_nextStream_nid_no_patch) {
         if (cur == stream) {
-            if (stream->_retired_nid_no_patch) return nullptr;
+            if (stream->_retired_nid_no_patch && (!allowRetiredStatic || stream->IsDynamic())) return nullptr;
             if (stream->_pinCount_nid_no_patch == std::numeric_limits<std::uint32_t>::max())
                 throw std::runtime_error("FileStream: pin count overflow");
             ++stream->_pinCount_nid_no_patch;
@@ -586,6 +603,38 @@ void RetireFileStream_nid_no_patch(FileStream* stream) {
     std::lock_guard<std::recursive_mutex> lock(FileStreamRegistryMutex_nid_no_patch());
     stream->_retired_nid_no_patch = true;
     if (stream->IsDynamic() && stream->_registered_nid_no_patch) UnlinkFileStream_nid_no_patch(stream);
+}
+
+std::optional<std::uint64_t> ReserveFileStreamReopen_nid_no_patch(FileStream* stream) {
+    std::lock_guard<std::recursive_mutex> lock(FileStreamRegistryMutex_nid_no_patch());
+    if (!stream->_registered_nid_no_patch || (stream->_retired_nid_no_patch && stream->IsDynamic())) return std::nullopt;
+    if (!stream->_retired_nid_no_patch) return 0;
+    const auto nextId = NextRegistryIdRef_nid_no_patch();
+    auto& reserved = ReservedRegistryIdsRef_nid_no_patch();
+    if (nextId == 0 || reserved >= std::numeric_limits<std::uint64_t>::max() - nextId + 1)
+        throw std::runtime_error("FileStream: registry id overflow");
+    ++reserved;
+    return 1;
+}
+
+void PublishFileStreamReopen_nid_no_patch(FileStream* stream, std::uint64_t reservation) {
+    if (reservation == 0) return;
+    std::lock_guard<std::recursive_mutex> lock(FileStreamRegistryMutex_nid_no_patch());
+    --ReservedRegistryIdsRef_nid_no_patch();
+    stream->_registryId_nid_no_patch = NextRegistryIdRef_nid_no_patch()++;
+    stream->_retired_nid_no_patch = false;
+}
+
+void CancelFileStreamReopenReservation_nid_no_patch(std::uint64_t reservation) {
+    if (reservation == 0) return;
+    std::lock_guard<std::recursive_mutex> lock(FileStreamRegistryMutex_nid_no_patch());
+    --ReservedRegistryIdsRef_nid_no_patch();
+}
+
+bool IsFileStreamInSnapshot_nid_no_patch(FileStream* stream, std::uint64_t snapshot) {
+    std::lock_guard<std::recursive_mutex> lock(FileStreamRegistryMutex_nid_no_patch());
+    return stream->_registered_nid_no_patch && !stream->_retired_nid_no_patch
+        && stream->_registryId_nid_no_patch <= snapshot;
 }
 
 std::pair<FileStream*, std::shared_ptr<std::recursive_mutex>>
@@ -660,11 +709,13 @@ void APS5_VABI fcloseall_nid_postfix() {
         if (!selected) break;
         FileStreamLease_nid_no_patch lease(selected, gate);
         std::lock_guard<std::recursive_mutex> gateLock(*gate);
-        std::FILE* const native = selected->RawHandle_nid_no_patch();
-        if (native == originalStdout && KeepHostStandardOutput_nid_no_patch() < 0)
-            throw std::runtime_error("fcloseall: cannot preserve the host standard output");
-        if (native == originalStderr && KeepHostStandardError_nid_no_patch() < 0)
-            throw std::runtime_error("fcloseall: cannot preserve the host standard error");
+        if (IsFileStreamInSnapshot_nid_no_patch(selected, snapshot)) {
+            std::FILE* const native = selected->RawHandle_nid_no_patch();
+            if (native == originalStdout && KeepHostStandardOutput_nid_no_patch() < 0)
+                throw std::runtime_error("fcloseall: cannot preserve the host standard output");
+            if (native == originalStderr && KeepHostStandardError_nid_no_patch() < 0)
+                throw std::runtime_error("fcloseall: cannot preserve the host standard error");
+        }
         if (preservationCursor == 0) break;
     }
     std::uint64_t cursor = snapshot;
@@ -674,8 +725,10 @@ void APS5_VABI fcloseall_nid_postfix() {
         FileStreamLease_nid_no_patch lease(selected, gate);
         {
             std::lock_guard<std::recursive_mutex> gateLock(*gate);
-            if (selected->IsOpen()) static_cast<void>(selected->CloseNativeUnderGate_nid_no_patch());
-            RetireFileStream_nid_no_patch(selected);
+            if (IsFileStreamInSnapshot_nid_no_patch(selected, snapshot)) {
+                if (selected->IsOpen()) static_cast<void>(selected->CloseNativeUnderGate_nid_no_patch());
+                RetireFileStream_nid_no_patch(selected);
+            }
         }
         if (cursor == 0) break;
     }
@@ -846,6 +899,14 @@ void* APS5_VABI reallocf_nid_postfix(void* ptr, size_t newSize) {
     void* result = realloc_nid_postfix(ptr, newSize);
     if (result == nullptr && ptr != nullptr && newSize != 0) ApplicationHeapFree_nid_no_patch(ptr);
     return result;
+}
+
+void* APS5_VABI reallocarray_nid_postfix(void* ptr, size_t nmemb, size_t size) {
+    if (size != 0 && nmemb > std::numeric_limits<size_t>::max() / size) {
+        errno = 12;
+        return nullptr;
+    }
+    return realloc_nid_postfix(ptr, nmemb * size);
 }
 
 void* APS5_VABI memalign_nid_postfix(size_t alignment, size_t size) {

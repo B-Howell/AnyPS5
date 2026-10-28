@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -643,6 +644,98 @@ static int FcloseallLockChild(const std::string& base) {
     return 0;
 }
 
+static int ClosedStreamReopenChild(const std::string& base) {
+    const std::string path = base + ".closed-reopen";
+    const std::string missing = base + ".closed-reopen-missing";
+    std::remove(path.c_str());
+    std::remove(missing.c_str());
+    FileStream stream(std::tmpfile());
+    if (stream.Close() != 0 || stream.IsOpen()) return 130;
+    errno = 0;
+    if (freopen_nid_postfix(nullptr, "wb", &stream) != nullptr || errno != 9) return 131;
+    if (freopen_nid_postfix(path.c_str(), "wb", &stream) != &stream) return 132;
+    if (fputc_nid_postfix('A', &stream) != 'A') return 133;
+    if (fclose_nid_postfix(&stream) != 0 || stream.IsOpen()) return 134;
+    errno = 0;
+    if (freopen_nid_postfix(nullptr, "wb", &stream) != nullptr || errno != 9) return 135;
+    if (freopen_nid_postfix(missing.c_str(), "rb", &stream) != nullptr || stream.IsOpen()) return 136;
+    if (freopen_nid_postfix(path.c_str(), "ab", &stream) != &stream) return 137;
+    if (fputc_nid_postfix('B', &stream) != 'B') return 138;
+    fcloseall_nid_postfix();
+    if (stream.IsOpen()) return 139;
+    if (freopen_nid_postfix(path.c_str(), "ab", &stream) != &stream) return 140;
+    if (fputc_nid_postfix('C', &stream) != 'C') return 141;
+#ifdef _WIN32
+    const HANDLE native = reinterpret_cast<HANDLE>(::_get_osfhandle(::_fileno(stream.GetHandle())));
+#else
+    const int native = ::fileno(stream.GetHandle());
+#endif
+    fcloseall_nid_postfix();
+    if (stream.IsOpen()) return 142;
+#ifdef _WIN32
+    DWORD flags = 0;
+    if (::GetHandleInformation(native, &flags) != 0 || ::GetLastError() != ERROR_INVALID_HANDLE) return 143;
+#else
+    errno = 0;
+    if (::fcntl(native, F_GETFD) != -1 || errno != EBADF) return 143;
+#endif
+    std::FILE* const read = std::fopen(path.c_str(), "rb");
+    if (!read) return 144;
+    char payload[4]{};
+    const bool contents = std::fread(payload, 1, sizeof(payload), read) == 3
+        && std::memcmp(payload, "ABC", 3) == 0;
+    std::fclose(read);
+    std::remove(path.c_str());
+    return contents ? 0 : 145;
+}
+
+static int ReopenSnapshotChild(const std::string& base) {
+    const std::string path = base + ".reopen-snapshot";
+    std::remove(path.c_str());
+    FileStream stream(std::tmpfile());
+    std::uint64_t cursor = std::numeric_limits<std::uint64_t>::max();
+    auto [selected, gate] = PinNextFileStream_nid_no_patch(cursor);
+    if (selected != &stream || gate != stream.GatePtr_nid_no_patch()) return 150;
+    FileStreamLease_nid_no_patch selection(selected, gate);
+    std::lock_guard<std::recursive_mutex> gateLock(*gate);
+    const std::uint64_t originalSnapshot = cursor + 1;
+    if (!IsFileStreamInSnapshot_nid_no_patch(selected, originalSnapshot)) return 151;
+    if (fclose_nid_postfix(&stream) != 0) return 152;
+    if (AcquireFileStreamLease_nid_no_patch(&stream).Valid()) return 153;
+    auto reopenLease = AcquireFileStreamLease_nid_no_patch(&stream, true);
+    if (!reopenLease.Valid() || reopenLease.Gate() != gate) return 154;
+    const auto reservation = ReserveFileStreamReopen_nid_no_patch(&stream);
+    if (!reservation || *reservation == 0) return 155;
+    struct ReservationCleanup {
+        std::uint64_t reservation;
+        ~ReservationCleanup() { CancelFileStreamReopenReservation_nid_no_patch(reservation); }
+    } cleanup{*reservation};
+    FileStream intervening(std::tmpfile());
+    std::uint64_t interveningCursor = std::numeric_limits<std::uint64_t>::max();
+    auto [interveningSelection, interveningGate] = PinNextFileStream_nid_no_patch(interveningCursor);
+    if (interveningSelection != &intervening) return 156;
+    FileStreamLease_nid_no_patch interveningLease(interveningSelection, interveningGate);
+    const std::uint64_t reservedSnapshot = interveningCursor + 1;
+    if (IsFileStreamInSnapshot_nid_no_patch(selected, reservedSnapshot)) return 157;
+    if (!stream.Reopen(std::filesystem::path(path), "wb",
+        [](const std::filesystem::path& filename, const std::string& mode) {
+            return std::fopen(filename.string().c_str(), mode.c_str());
+        })) return 158;
+    PublishFileStreamReopen_nid_no_patch(&stream, *reservation);
+    cleanup.reservation = 0;
+    if (IsFileStreamInSnapshot_nid_no_patch(selected, originalSnapshot)) return 159;
+    if (IsFileStreamInSnapshot_nid_no_patch(selected, reservedSnapshot)) return 160;
+    if (!IsFileStreamInSnapshot_nid_no_patch(selected, std::numeric_limits<std::uint64_t>::max())) return 161;
+    if (fputc_nid_postfix('R', &stream) != 'R') return 162;
+    fcloseall_nid_postfix();
+    if (stream.IsOpen() || intervening.IsOpen()) return 163;
+    std::FILE* const read = std::fopen(path.c_str(), "rb");
+    const bool contents = read && std::fgetc(read) == 'R';
+    if (read) std::fclose(read);
+    std::remove(path.c_str());
+    return contents ? 0 : 164;
+}
+
 static int RunFcloseallChild(const char* self, const char* base, const char* mode = "--fcloseall-child") {
 #ifdef _WIN32
     static_cast<void>(self);
@@ -688,6 +781,8 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[2], "--fcloseall-lock-child") == 0) return FcloseallLockChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--fcloseall-fclose-race-child") == 0) return FcloseallFcloseRaceChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--freopen-lock-child") == 0) return FreopenLockChild(argv[1]);
+    if (argc == 3 && std::strcmp(argv[2], "--closed-reopen-child") == 0) return ClosedStreamReopenChild(argv[1]);
+    if (argc == 3 && std::strcmp(argv[2], "--reopen-snapshot-child") == 0) return ReopenSnapshotChild(argv[1]);
     Require(argc == 2);
     CheckExclusiveCppOpen(argv[1]);
     CheckUpdateStreamReadsAfterWrites(argv[1]);
@@ -811,6 +906,10 @@ int main(int argc, char** argv) {
     Require(ferror_nid_postfix(stream) != 0);
     static_cast<void>(fclose_nid_postfix(stream));
     Require(std::remove(argv[1]) == 0);
+    const int reopenSnapshot = RunFcloseallChild(argv[0], argv[1], "--reopen-snapshot-child");
+    Require(reopenSnapshot == 0, "reopen snapshot publication child failed");
+    const int closedReopen = RunFcloseallChild(argv[0], argv[1], "--closed-reopen-child");
+    Require(closedReopen == 0, "closed-stream reopen and close-all child failed");
     const int childResult = RunFcloseallChild(argv[0], argv[1]);
     Require(childResult == 0, "fcloseall child failed");
     const int lockResult = RunFcloseallChild(argv[0], argv[1], "--fcloseall-lock-child");

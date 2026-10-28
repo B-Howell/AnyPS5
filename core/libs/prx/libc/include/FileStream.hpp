@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -68,9 +69,13 @@ extern "C" std::recursive_mutex& FileStreamRegistryMutex_nid_no_patch();
 extern "C" FileStream*& FileStreamRegistryHead_nid_no_patch();
 void RegisterFileStream_nid_no_patch(FileStream* stream, std::shared_ptr<std::recursive_mutex> preallocatedGate = {});
 void UnlinkFileStream_nid_no_patch(FileStream* stream);
-std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream* stream);
+std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream* stream, bool allowRetiredStatic = false);
 void UnpinFileStream_nid_no_patch(FileStream* stream);
 void RetireFileStream_nid_no_patch(FileStream* stream);
+std::optional<std::uint64_t> ReserveFileStreamReopen_nid_no_patch(FileStream* stream);
+void PublishFileStreamReopen_nid_no_patch(FileStream* stream, std::uint64_t reservation);
+void CancelFileStreamReopenReservation_nid_no_patch(std::uint64_t reservation);
+bool IsFileStreamInSnapshot_nid_no_patch(FileStream* stream, std::uint64_t snapshot);
 std::pair<FileStream*, std::shared_ptr<std::recursive_mutex>>
     PinNextFileStream_nid_no_patch(std::uint64_t& cursor);
 void DetachFileStreamAliasesForNative_nid_no_patch(FileStream* source, std::FILE* native);
@@ -93,9 +98,12 @@ class FileStream {
 
     friend void RegisterFileStream_nid_no_patch(FileStream*, std::shared_ptr<std::recursive_mutex>);
     friend void UnlinkFileStream_nid_no_patch(FileStream*);
-    friend std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream*);
+    friend std::shared_ptr<std::recursive_mutex> PinFileStreamIfValid_nid_no_patch(FileStream*, bool);
     friend void UnpinFileStream_nid_no_patch(FileStream*);
     friend void RetireFileStream_nid_no_patch(FileStream*);
+    friend std::optional<std::uint64_t> ReserveFileStreamReopen_nid_no_patch(FileStream*);
+    friend void PublishFileStreamReopen_nid_no_patch(FileStream*, std::uint64_t);
+    friend bool IsFileStreamInSnapshot_nid_no_patch(FileStream*, std::uint64_t);
     friend std::pair<FileStream*, std::shared_ptr<std::recursive_mutex>>
         PinNextFileStream_nid_no_patch(std::uint64_t&);
     friend void DetachFileStreamAliasesForNative_nid_no_patch(FileStream*, std::FILE*);
@@ -204,13 +212,43 @@ public:
         return directory;
     }
 
+    bool Adopt(std::FILE* handle) {
+        _guest = {};
+        guestError = false;
+        randomDevice = false;
+        directory = false;
+        if (!handle) {
+            StoreHandleAtomic_nid_no_patch(nullptr);
+            return false;
+        }
+        _guest.flags = 0x10;
+#ifdef _WIN32
+        const int descriptor = _fileno(handle);
+#else
+        const int descriptor = ::fileno(handle);
+#endif
+        _guest.descriptor = descriptor >= 0 && descriptor <= 32767 ? static_cast<std::int16_t>(descriptor) : -1;
+        StoreHandleAtomic_nid_no_patch(handle);
+        return true;
+    }
+
     bool Reopen(const std::filesystem::path& filename, const char* mode,
         [[maybe_unused]] std::FILE* (*open)(const std::filesystem::path&, const std::string&) = nullptr) {
-        auto* previous = GetHandle();
         struct SynchronizeAliases {
             FileStream* source;
             ~SynchronizeAliases() { SynchronizeFileStreamAliases_nid_no_patch(source); }
         } synchronizeAliases{this};
+        auto* previous = LoadHandleAtomic_nid_no_patch();
+        if (!previous) {
+            if (!open || filename.empty()) {
+                errno = ENOENT;
+                return false;
+            }
+            std::unique_ptr<std::FILE, int (*)(std::FILE*)> replacement(open(filename, mode), std::fclose);
+            if (!Adopt(replacement.get())) return false;
+            replacement.release();
+            return true;
+        }
         _guest = {};
         guestError = false;
         randomDevice = false;
@@ -279,16 +317,7 @@ public:
         StoreHandleAtomic_nid_no_patch(std::freopen(filename.c_str(), mode, previous));
         if (kept >= 0) RestoreHostStandard(previous, kept);
 #endif
-        auto* currentHandle = LoadHandleAtomic_nid_no_patch();
-        if (!currentHandle) return false;
-        _guest.flags = 0x10;
-#ifdef _WIN32
-        const int descriptor = _fileno(currentHandle);
-#else
-        const int descriptor = ::fileno(currentHandle);
-#endif
-        _guest.descriptor = descriptor >= 0 && descriptor <= 32767 ? static_cast<std::int16_t>(descriptor) : -1;
-        return true;
+        return Adopt(LoadHandleAtomic_nid_no_patch());
     }
     void PublishStatus(bool endOfFile, bool error) {
         __atomic_store_n(&_guest.readRemaining, 0, __ATOMIC_RELAXED);
@@ -395,7 +424,7 @@ public:
     }
 
     void KeepDirectoryReadError(bool failed) {
-        if (failed && directory && (_guest.flags & 0x40) != 0) errno = 21;
+        if (failed && directory && (__atomic_load_n(&_guest.flags, __ATOMIC_RELAXED) & 0x40) != 0) errno = 21;
     }
 
     void SetError() {
@@ -470,8 +499,8 @@ public:
     bool Valid() const { return _stream != nullptr && _gate != nullptr; }
 };
 
-inline FileStreamLease_nid_no_patch AcquireFileStreamLease_nid_no_patch(FileStream* stream) {
-    auto gate = PinFileStreamIfValid_nid_no_patch(stream);
+inline FileStreamLease_nid_no_patch AcquireFileStreamLease_nid_no_patch(FileStream* stream, bool allowRetiredStatic = false) {
+    auto gate = PinFileStreamIfValid_nid_no_patch(stream, allowRetiredStatic);
     FileStream* const pinned = gate ? stream : nullptr;
     return FileStreamLease_nid_no_patch(pinned, std::move(gate));
 }
