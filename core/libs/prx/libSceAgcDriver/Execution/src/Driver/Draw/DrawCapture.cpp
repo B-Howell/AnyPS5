@@ -19,6 +19,14 @@ namespace AgcDriver::DriverDetail {
 
 namespace {
 
+std::uint64_t ForwardedOnlyWords(const ShaderRecompiler::RecompileResult& compiled, std::uint64_t otherUses, std::uint32_t hiddenWords) {
+    std::uint64_t forwarded = 0;
+    for (const auto word : compiled.shaderDataUserWords) {
+        if (word >= hiddenWords && word < 64u) forwarded |= std::uint64_t{1} << word;
+    }
+    return forwarded & ~otherUses;
+}
+
 void TraceMaterializationFailure(std::uint64_t token, const Submission& submission, std::size_t packetOffset, std::size_t stage, const char* phase, const std::exception_ptr& failure) {
     if (token == 0) return;
     const char* type = "unknown";
@@ -165,12 +173,15 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
     timing.Mark("materialize");
     const auto walked = capture->userDataUse.asValue | capture->userDataUse.asBase;
     auto mask = walked == 0 ? ~std::uint64_t{0} : walked | stageCapture.compiled->userDataRegisterReads;
+    auto fetched = std::uint64_t{0};
     if (vertexInfos[i]) {
         for (const auto reg : {static_cast<std::uint32_t>(vertexInfos[i]->fetchAttribReg), static_cast<std::uint32_t>(vertexInfos[i]->fetchBufferReg)}) {
-            mask |= reg + 1u < 64u ? std::uint64_t{3} << reg : ~std::uint64_t{0};
+            fetched |= reg + 1u < 64u ? std::uint64_t{3} << reg : ~std::uint64_t{0};
         }
     }
+    mask |= fetched;
     stageCapture.userDataMask = mask;
+    stageCapture.forwardedWords = ForwardedOnlyWords(*stageCapture.compiled, walked | fetched, program.hiddenUserWords);
     phaseTiming.Phase(DrawRowRecompile);
     return stageCapture.compiled;
 } catch (const std::exception& error) {
@@ -232,6 +243,7 @@ void Driver::cacheDrawStages(bool useDrawEntries, bool drawHit, const Pm4::DrawP
             variant->forgetSerial = stageCapture.forgetSerial;
             variant->pushOffset = stageCapture.pushOffset;
             variant->userDataMask = stageCapture.userDataMask;
+            variant->forwardedWords = stageCapture.forwardedWords;
             if (vertexInfos[i]) variant->vertexInfo = std::make_shared<const ShaderRecompiler::ShaderVertexStageInfo>(*vertexInfos[i]);
 
             std::vector<ShaderRecompiler::MemoryRegion> regions(stageCapture.regions.begin(), stageCapture.regions.end());
