@@ -35,8 +35,13 @@ constexpr std::size_t TexelAlignment = 65536;
 std::array<std::uint8_t, TexelBytes + TexelAlignment - 1> TexelStorage{};
 const std::span<std::uint8_t, TexelBytes> Texels{reinterpret_cast<std::uint8_t*>((reinterpret_cast<std::uintptr_t>(TexelStorage.data()) + TexelAlignment - 1) & ~(TexelAlignment - 1)), TexelBytes};
 
-alignas(256) constexpr std::array<std::uint32_t, 11> Code{
+alignas(256) constexpr std::array<std::uint32_t, 11> SampleLevelZero{
     0x34020084, 0xe0381000, 0x80000201, 0xbf8c3f70, 0xf09c0f20, 0x00820602, 0x34020085, 0xbf8c3f70,
+    0xe0781000, 0x80010601, 0xbf810000,
+};
+
+alignas(256) constexpr std::array<std::uint32_t, 11> SampleLevel{
+    0x34020084, 0xe0381000, 0x80000201, 0xbf8c3f70, 0xf0900f20, 0x00820602, 0x34020085, 0xbf8c3f70,
     0xe0781000, 0x80010601, 0xbf810000,
 };
 
@@ -81,7 +86,7 @@ void FillInput(std::uint32_t limit) {
     for (std::uint32_t tid = 0; tid < Threads; ++tid) {
         Input[tid * 4u + 0u] = std::bit_cast<std::uint32_t>(-0.2f + 0.045f * static_cast<float>(tid));
         Input[tid * 4u + 1u] = std::bit_cast<std::uint32_t>(layers[tid % layers.size()]);
-        Input[tid * 4u + 2u] = 0u;
+        Input[tid * 4u + 2u] = std::bit_cast<std::uint32_t>(static_cast<float>(tid % 3u) * 1.7f);
         Input[tid * 4u + 3u] = 0u;
     }
 }
@@ -94,7 +99,7 @@ void Expect(std::uint32_t tid, const std::string& name, std::uint32_t component,
     Require(std::fabs(scaled - expected) <= tolerance, name + ": thread " + std::to_string(tid) + " component " + std::to_string(component) + " is " + std::to_string(scaled) + "/255, expected " + std::to_string(expected) + "/255");
 }
 
-void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint32_t addressX, std::uint32_t filter, const char* name) {
+void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint32_t addressX, std::uint32_t filter, const char* name, const std::array<std::uint32_t, 11>& code = SampleLevelZero) {
     Output.fill(-1.0f);
     std::vector<std::uint32_t> userData(20, 0u);
     const auto input = BufferDescriptor(Input.data(), static_cast<std::uint32_t>(sizeof(Input)));
@@ -105,8 +110,7 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint32_t
     std::copy(output.begin(), output.end(), userData.begin() + 4);
     std::copy(texture.begin(), texture.end(), userData.begin() + 8);
     std::copy(sampler.begin(), sampler.end(), userData.begin() + 16);
-    const std::span<const std::uint32_t> code(Code);
-    const std::array<ShaderRecompiler::MemoryRegion, 1> memory{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(code)}}};
+    const std::array<ShaderRecompiler::MemoryRegion, 1> memory{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(std::span(code))}}};
     const ShaderRecompiler::ShaderComputeStageInfo compute{{Threads, 1, 1}, 0u, {false, false, false}, false, 1};
     ShaderRecompiler::RecompileRequest request{
         {ShaderStage::Compute, reinterpret_cast<std::uintptr_t>(code.data()), code, 0, {}},
@@ -164,6 +168,7 @@ int main() {
         Run(*device, 0, Wrap, 0, "wrapped point image_sample_lz on a 1D array past maxImageArrayLayers");
         Run(*device, 0, ClampEdge, Bilinear, "bilinear image_sample_lz on a 1D array past maxImageArrayLayers");
         Run(*device, 2, ClampEdge, 0, "point image_sample_lz on a view from slice 2 of a 1D array past maxImageArrayLayers");
+        Run(*device, 0, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a single-level 1D array past maxImageArrayLayers", SampleLevel);
         std::puts("a 1D array past maxImageArrayLayers was sampled as rows of a 2D image");
         return 0;
     } catch (const std::exception& error) {

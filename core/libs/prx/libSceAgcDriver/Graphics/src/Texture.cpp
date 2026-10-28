@@ -353,6 +353,7 @@ Texture::Texture(const Context& context, TextureDetiler& detiler, const GuestTex
         if (layerRows) {
             Require(!depthCompare && descriptor.dimension == TextureDimension::k1DArray, "only a sampled 1D array is laid out as rows of a 2D image");
             Require(!srgbExpand, "a 1D array laid out as rows of a 2D image in a format expanded to RGBA8 is not implemented");
+            Require(!IsBlockCompressed(descriptor.format), "a block-compressed 1D array laid out as rows of a 2D image is not implemented");
             Require(descriptor.baseLevel == 0u && std::min(descriptor.lastLevel, descriptor.mipCount - 1u) == 0u, "a 1D array past maxImageArrayLayers viewed at mip levels other than level 0 alone is not implemented");
         }
 
