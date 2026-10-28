@@ -75,6 +75,8 @@ struct TextureProfile {
     // batch of their own (APS5_NO_RECORDED_CLEAR=1, or no recorder).
     std::uint64_t storageRecordedClears = 0;
     std::uint64_t storageWaitedClears = 0;
+    std::uint64_t layerRows = 0;
+    double layerRowsMs = 0;
 };
 
 TextureProfile& Profile() {
@@ -340,6 +342,7 @@ Texture::Texture(const Context& context, TextureDetiler& detiler, const GuestTex
 
     static const bool profile = std::getenv("APS5_PROFILE_DRAW") != nullptr;
     PhaseTimer timer;
+    const auto started = profile && layerRows ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     try {
         const auto colorFormat = SampledTextureFormat(context, descriptor.format);
         const bool srgbExpand = !depthCompare && SrgbExpandsToRgba8(context, descriptor.format);
@@ -606,6 +609,11 @@ Texture::Texture(const Context& context, TextureDetiler& detiler, const GuestTex
             auto& totals = Profile();
             totals.view += timer.lap();
             if (++totals.count % 200 == 0) std::fprintf(stderr, "[texture] %llu textures (%llu copied from storage images, %llu uploads recorded): allocate+image %.0f ms, guest read %.0f ms, detile+copy %.0f ms, view+buffer release %.0f ms\n", static_cast<unsigned long long>(totals.count), static_cast<unsigned long long>(totals.fromStorage), static_cast<unsigned long long>(totals.recordedUploads), totals.allocate, totals.read, totals.gpu, totals.view);
+            if (layerRows) {
+                const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                totals.layerRowsMs += ms;
+                std::fprintf(stderr, "[texture] layer rows 0x%llx: %u slices of %u texels as a %ux%u image in %.2f ms (%llu layer-row textures, %.0f ms in all)\n", static_cast<unsigned long long>(descriptor.baseAddress), rowLayers, descriptor.width, descriptor.width, rowLayers * 2u, ms, static_cast<unsigned long long>(++totals.layerRows), totals.layerRowsMs);
+            }
         }
         countedBytes = allocationBytes;
         SampledMemoryCounter().fetch_add(countedBytes, std::memory_order_relaxed);

@@ -200,6 +200,16 @@ PoisonReason invalidImageReason(const DescriptorValue& descriptor) {
     return PoisonReason::Dimension;
 }
 
+bool layerRowsCandidate(const ImageResource& image) {
+    return image.dimension == RdnaImageDimension::Dim1DArray && image.layerRowsCompatible && image.resourceClass != ImageResourceClass::Storage && image.table == NoTable && !image.depthCompare;
+}
+
+bool viewsPastLayerLimit(const DescriptorValue& descriptor, std::uint32_t limit) {
+    const auto lastArray = descriptor.dwords[4] & 0x1fffu;
+    const auto baseArray = (descriptor.dwords[4] >> 16u) & 0x1fffu;
+    return limit != 0u && baseArray <= lastArray && lastArray - baseArray >= limit;
+}
+
 ImageDecode inspectImageDescriptor(const DescriptorValue& descriptor, const ImageResource& base, std::uint32_t srgbDecodeFormats) {
     ImageDecode result;
     auto& decoded = result.decoded;
@@ -231,13 +241,9 @@ ImageDecode inspectImageDescriptor(const DescriptorValue& descriptor, const Imag
     if (GcnGuestShaders() && imageCoordinates(decoded.dimension) != imageCoordinates(base.dimension)) {
         throw std::runtime_error("GCN image instruction on a descriptor of type " + std::to_string(static_cast<std::uint32_t>(rawImageType(descriptor))) + " needs a different address count than its inferred dimension; not implemented");
     }
-    if (decoded.dimension == RdnaImageDimension::Dim1DArray && base.layerRowsCompatible && base.maxArrayLayers != 0u && base.resourceClass != ImageResourceClass::Storage && base.table == NoTable && !base.depthCompare) {
-        const auto lastArray = descriptor.dwords[4] & 0x1fffu;
-        const auto baseArray = (descriptor.dwords[4] >> 16u) & 0x1fffu;
-        if (baseArray <= lastArray && lastArray - baseArray >= base.maxArrayLayers) {
-            decoded.dimension = RdnaImageDimension::Dim2D;
-            decoded.layerRows = true;
-        }
+    if (decoded.dimension == RdnaImageDimension::Dim1DArray && layerRowsCandidate(base) && viewsPastLayerLimit(descriptor, base.maxArrayLayers)) {
+        decoded.dimension = RdnaImageDimension::Dim2D;
+        decoded.layerRows = true;
     }
     decoded.cube = descriptorIsCube(descriptor);
     const auto format = rawImageFormat(descriptor);
@@ -1648,6 +1654,11 @@ void materializeTables(const IrResourcePlan& plan, ResourceSnapshot& snapshot) {
         if (!image.convertedSamples && !image.srgbDecodeCompatible && convertedSampleCompatible(image) && descriptor.dwordCount == 8u && !nullImageDescriptor(image, descriptor)) {
             if (rawImageFormat(descriptor) == IrBufferFormat::Format11_11_10UNorm) throw ConvertedSampleRequired("samples a converted image through a shader prepared without converted-sample modes");
         }
+        if (image.maxArrayLayers == 0u && plan.maxImageArrayLayers != 0u && layerRowsCandidate(image) && descriptor.dwordCount == 8u && !nullImageDescriptor(image, descriptor)) {
+            auto rows = image;
+            rows.maxArrayLayers = plan.maxImageArrayLayers;
+            if (inspectImageDescriptor(descriptor, rows, image.srgbDecodeFormats).decoded.layerRows) throw LayerRowSamplesRequired("samples a 1D array past maxImageArrayLayers through a shader prepared without layer-row modes");
+        }
         static_cast<void>(ResourceMaterializer::RuntimeImageMode(image, descriptor, plan.info.runtimeImageModes.at(i)));
     }
 }
@@ -2091,7 +2102,7 @@ std::vector<ImageResource> ResourceMaterializer::RuntimeImageModes(const ImageRe
             cube.cube = true;
             modes.push_back(cube);
         }
-        if (image.dimension == RdnaImageDimension::Dim1DArray && image.layerRowsCompatible && image.maxArrayLayers != 0u && !storage && !table && !depth && !image.depthCompare && conversion == IrBufferFormat::Invalid && packed == IrBufferFormat::Invalid) {
+        if (layerRowsCandidate(image) && image.maxArrayLayers != 0u && !depth && conversion == IrBufferFormat::Invalid && packed == IrBufferFormat::Invalid) {
             auto rows = mode;
             rows.dimension = RdnaImageDimension::Dim2D;
             rows.layerRows = true;
@@ -2332,7 +2343,6 @@ void ResourceMaterializer::ApplyStaticInterface(IrProgram& program, bool nativeS
     bool tables = false;
     for (auto& image : images) {
         image.srgbDecodeFormats = resources.srgbDecodeFormats;
-        image.maxArrayLayers = resources.maxImageArrayLayers;
         image.numericClass = image.atomic ? IrTextureNumericClass::Uint : IrTextureNumericClass::Float;
         image.mipCount = image.mipMode == ImageMipMode::DynamicStorage ? RuntimeAbi::StorageMipSlots : 1u;
         if (image.table == NoTable) continue;

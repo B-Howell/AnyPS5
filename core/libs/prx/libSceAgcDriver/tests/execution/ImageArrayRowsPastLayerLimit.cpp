@@ -99,7 +99,13 @@ void Expect(std::uint32_t tid, const std::string& name, std::uint32_t component,
     Require(std::fabs(scaled - expected) <= tolerance, name + ": thread " + std::to_string(tid) + " component " + std::to_string(component) + " is " + std::to_string(scaled) + "/255, expected " + std::to_string(expected) + "/255");
 }
 
-void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint32_t addressX, std::uint32_t filter, const char* name, const std::array<std::uint32_t, 11>& code = SampleLevelZero) {
+struct Compiled {
+    std::size_t bindings = 0;
+    std::uint32_t elements = 0;
+    ShaderRecompiler::SpirvContentHash spirv;
+};
+
+Compiled Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint32_t addressX, std::uint32_t filter, const char* name, const std::array<std::uint32_t, 11>& code = SampleLevelZero) {
     Output.fill(-1.0f);
     std::vector<std::uint32_t> userData(20, 0u);
     const auto input = BufferDescriptor(Input.data(), static_cast<std::uint32_t>(sizeof(Input)));
@@ -146,6 +152,10 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint32_t
         }
         for (std::uint32_t component = 0; component < 4u; ++component) Expect(tid, name, component, actual[component] * 255.0f, expected[component], tolerance[component]);
     }
+    Compiled compiled{result.bindings.size(), 0u, result.spirv.ContentHash()};
+    for (const auto& binding : result.bindings) compiled.elements += binding.count;
+    std::printf("%s: %zu bindings, %u descriptor elements, SPIR-V %016llx%016llx\n", name, compiled.bindings, compiled.elements, static_cast<unsigned long long>(compiled.spirv.high), static_cast<unsigned long long>(compiled.spirv.low));
+    return compiled;
 }
 
 }
@@ -164,10 +174,15 @@ int main() {
         Layers = std::min(limit + 3u, MaxGuestLayers);
         FillTexels();
         FillInput(limit);
+        const auto atLimit = Run(*device, 3, ClampEdge, 0, "point image_sample_lz on a view of exactly maxImageArrayLayers slices");
+        const auto atLimitLevel = Run(*device, 3, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of exactly maxImageArrayLayers slices", SampleLevel);
+        const auto pastLimit = Run(*device, 2, ClampEdge, 0, "point image_sample_lz on a view of maxImageArrayLayers + 1 slices");
+        const auto pastLimitLevel = Run(*device, 2, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of maxImageArrayLayers + 1 slices", SampleLevel);
+        Require(atLimit.elements < pastLimit.elements && atLimitLevel.elements < pastLimitLevel.elements, "a shader that never saw a view past maxImageArrayLayers was given the layer-row mode");
+        Require(!(atLimit.spirv == pastLimit.spirv) && !(atLimitLevel.spirv == pastLimitLevel.spirv), "a view past maxImageArrayLayers was sampled through the shader prepared for views within the limit");
         Run(*device, 0, ClampEdge, 0, "point image_sample_lz on a 1D array past maxImageArrayLayers");
         Run(*device, 0, Wrap, 0, "wrapped point image_sample_lz on a 1D array past maxImageArrayLayers");
         Run(*device, 0, ClampEdge, Bilinear, "bilinear image_sample_lz on a 1D array past maxImageArrayLayers");
-        Run(*device, 2, ClampEdge, 0, "point image_sample_lz on a view from slice 2 of a 1D array past maxImageArrayLayers");
         Run(*device, 0, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a single-level 1D array past maxImageArrayLayers", SampleLevel);
         std::puts("a 1D array past maxImageArrayLayers was sampled as rows of a 2D image");
         return 0;

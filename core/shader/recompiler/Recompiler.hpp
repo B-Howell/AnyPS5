@@ -276,6 +276,7 @@ struct GuestContext {
     std::optional<ShaderFloatMode> floatMode;
     std::span<const std::uint32_t> linkedCallFallbacks;
     bool convertedSamples = false;
+    bool layerRowSamples = false;
 };
 
 struct MeshTargetLimits {
