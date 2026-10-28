@@ -2,6 +2,11 @@
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "Recompiler.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ShaderMemory.hpp"
+#include "prx/libSceAgcDriver/Execution/include/Driver/Shaders/ShaderRegistry.hpp"
+#include "Optimization/ResourceProgram.hpp"
+#include "Optimization/ResourceMaterializer.hpp"
+#include "IntermediateRepresentation/IrMetadata/ResourcePlan.hpp"
 #include "VulkanTestDevice.hpp"
 #include <algorithm>
 #include <array>
@@ -103,6 +108,11 @@ struct Compiled {
     std::size_t bindings = 0;
     std::uint32_t elements = 0;
     ShaderRecompiler::SpirvContentHash spirv;
+    std::uint64_t registeredVariant = 0;
+    std::uint32_t registeredElements = 0;
+    std::uint32_t preparedModes = 0;
+    std::size_t preparedEntries = 0;
+    bool promotedAtCapture = false;
 };
 
 Compiled Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint32_t addressX, std::uint32_t filter, const char* name, const std::array<std::uint32_t, 11>& code = SampleLevelZero) {
@@ -126,7 +136,16 @@ Compiled Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint
     };
     request.useCache = false;
     const auto result = ShaderRecompiler::Recompile(request);
-    device.Dispatch(result, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
+    static AgcDriver::DriverDetail::ShaderSnapshot zeroSnapshot{reinterpret_cast<std::uintptr_t>(SampleLevelZero.data()), 0, 0, {SampleLevelZero.begin(), SampleLevelZero.end()}, {}};
+    static AgcDriver::DriverDetail::ShaderSnapshot levelSnapshot{reinterpret_cast<std::uintptr_t>(SampleLevel.data()), 0, 0, {SampleLevel.begin(), SampleLevel.end()}, {}};
+    auto& snapshot = &code == &SampleLevel ? levelSnapshot : zeroSnapshot;
+    request.shader.code = snapshot.code;
+    auto invocation = AgcDriver::DriverDetail::InvocationFor(snapshot, 0, request);
+    const auto beforeCapture = snapshot.prepared->entries.size();
+    AgcDriver::ShaderMemory shaderMemory(request.context.memory);
+    const auto capture = AgcDriver::DriverDetail::CaptureInvocation(shaderMemory, snapshot, 0, request, invocation);
+    const auto registered = invocation.Materialize(*capture);
+    device.Dispatch(*registered, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
     device.WaitIdle();
     const auto viewed = Layers - baseArray;
     for (std::uint32_t tid = 0; tid < Threads; ++tid) {
@@ -154,7 +173,13 @@ Compiled Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray, std::uint
     }
     Compiled compiled{result.bindings.size(), 0u, result.spirv.ContentHash()};
     for (const auto& binding : result.bindings) compiled.elements += binding.count;
+    compiled.registeredVariant = registered->variantId;
+    for (const auto& binding : registered->bindings) compiled.registeredElements += binding.count;
+    for (const auto& image : capture->plan->info.images) compiled.preparedModes += static_cast<std::uint32_t>(ShaderRecompiler::ResourceMaterializer::RuntimeImageModes(image).size());
+    compiled.preparedEntries = snapshot.prepared->entries.size();
+    compiled.promotedAtCapture = compiled.preparedEntries > beforeCapture;
     std::printf("%s: %zu bindings, %u descriptor elements, SPIR-V %016llx%016llx\n", name, compiled.bindings, compiled.elements, static_cast<unsigned long long>(compiled.spirv.high), static_cast<unsigned long long>(compiled.spirv.low));
+    std::printf("registered: %u descriptor elements, prepared: %u image modes, variant %llu, capture promotion %u\n", compiled.registeredElements, compiled.preparedModes, static_cast<unsigned long long>(compiled.registeredVariant), compiled.promotedAtCapture ? 1u : 0u);
     return compiled;
 }
 
@@ -178,8 +203,20 @@ int main() {
         const auto atLimitLevel = Run(*device, 3, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of exactly maxImageArrayLayers slices", SampleLevel);
         const auto pastLimit = Run(*device, 2, ClampEdge, 0, "point image_sample_lz on a view of maxImageArrayLayers + 1 slices");
         const auto pastLimitLevel = Run(*device, 2, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of maxImageArrayLayers + 1 slices", SampleLevel);
-        Require(atLimit.elements < pastLimit.elements && atLimitLevel.elements < pastLimitLevel.elements, "a shader that never saw a view past maxImageArrayLayers was given the layer-row mode");
+        Require(atLimit.preparedModes < pastLimit.preparedModes && atLimitLevel.preparedModes < pastLimitLevel.preparedModes, "a shader that never saw a view past maxImageArrayLayers was given the layer-row mode");
         Require(!(atLimit.spirv == pastLimit.spirv) && !(atLimitLevel.spirv == pastLimitLevel.spirv), "a view past maxImageArrayLayers was sampled through the shader prepared for views within the limit");
+        Require(pastLimit.promotedAtCapture && pastLimitLevel.promotedAtCapture, "capturing the first oversized view did not promote its registered shader");
+        Require(atLimit.registeredVariant != pastLimit.registeredVariant && atLimitLevel.registeredVariant != pastLimitLevel.registeredVariant, "registered shaders used the same artifact before and after layer-row promotion");
+        const auto repeated = Run(*device, 2, ClampEdge, 0, "repeated oversized view through its promoted registered shader");
+        const auto returned = Run(*device, 3, ClampEdge, 0, "within-limit view through its promoted registered shader");
+        const auto repeatedLevel = Run(*device, 2, ClampEdge, Bilinear, "repeated explicit-LOD oversized view through its promoted registered shader", SampleLevel);
+        const auto returnedLevel = Run(*device, 3, ClampEdge, Bilinear, "within-limit explicit-LOD view through its promoted registered shader", SampleLevel);
+        for (const auto* reused : {&repeated, &returned}) {
+            Require(reused->registeredVariant == pastLimit.registeredVariant && reused->preparedEntries == pastLimit.preparedEntries && !reused->promotedAtCapture, "registered layer-row shader was prepared again instead of reused");
+        }
+        for (const auto* reused : {&repeatedLevel, &returnedLevel}) {
+            Require(reused->registeredVariant == pastLimitLevel.registeredVariant && reused->preparedEntries == pastLimitLevel.preparedEntries && !reused->promotedAtCapture, "registered explicit-LOD layer-row shader was prepared again instead of reused");
+        }
         Run(*device, 0, ClampEdge, 0, "point image_sample_lz on a 1D array past maxImageArrayLayers");
         Run(*device, 0, Wrap, 0, "wrapped point image_sample_lz on a 1D array past maxImageArrayLayers");
         Run(*device, 0, ClampEdge, Bilinear, "bilinear image_sample_lz on a 1D array past maxImageArrayLayers");
