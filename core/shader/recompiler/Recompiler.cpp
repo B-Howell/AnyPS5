@@ -23,6 +23,8 @@
 #include <new>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
+#include <optional>
 #include "ControlFlow/include/ControlFlow/GraphBuilder.hpp"
 #include "ControlFlow/include/ControlFlow/Structurizer.hpp"
 #include "RdnaDecoder/include/RdnaDecoder/RdnaInstructionDecoder.hpp"
@@ -1288,6 +1290,7 @@ RecompileResult materializeResult(const CompiledVariant& variant, const Recompil
         }
     }
     result.shaderDataUserWords = std::move(bindings.shaderDataUserWords);
+    result.bufferBaseSlots = std::move(bindings.bufferBaseSlots);
     result.poisonedSrtReads = static_cast<std::uint32_t>(snapshot.srtPoison.size()) + snapshot.nullRootReads;
     if (!tables.map.empty()) {
         result.imageTablePoison.reserve(tables.poison.size());
@@ -1939,6 +1942,78 @@ void materializeCapture(ResourceCapture& capture, const SrtRuntime& runtime) {
     }
 }
 
+}
+
+namespace {
+
+std::vector<std::pair<std::uint32_t, std::uint32_t>> findInlineBufferBaseWords(const IrResourcePlan& plan) {
+    const auto userRegister = [&](const IrValue* raw) -> std::optional<std::uint32_t> {
+        if (raw == nullptr) return std::nullopt;
+        const auto* value = raw->Resolve();
+        if (value->HasImmediate() || value->Opcode() != IrOpcode::GetUserData || value->ArgumentCount() < 1 || value->Argument(0) == nullptr) return std::nullopt;
+        const auto reg = RegIndex(static_cast<ScalarReg>(value->Argument(0)->Register().index));
+        if (reg < plan.userDataBase || reg - plan.userDataBase >= plan.userDataCount) return std::nullopt;
+        return reg - plan.userDataBase;
+    };
+    std::vector<bool> heldSource(plan.descriptorSources.size(), false);
+    for (const auto& source : plan.descriptorSources) {
+        if (!source.tableColumn) continue;
+        if (source.tableColumn->heapSource < heldSource.size()) heldSource[source.tableColumn->heapSource] = true;
+        for (const auto& domain : source.tableColumn->keyDomains) {
+            if (domain.source < heldSource.size()) heldSource[domain.source] = true;
+        }
+    }
+    for (const auto& image : plan.info.images) {
+        if (image.source < heldSource.size()) heldSource[image.source] = true;
+    }
+    for (const auto& sampler : plan.info.samplers) {
+        if (sampler.source < heldSource.size()) heldSource[sampler.source] = true;
+    }
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> candidates;
+    std::vector<bool> candidateSource(plan.descriptorSources.size(), false);
+    for (std::uint32_t buffer = 0; buffer < plan.info.buffers.size(); ++buffer) {
+        const auto& resource = plan.info.buffers[buffer];
+        if (resource.source >= plan.descriptorSources.size() || heldSource[resource.source] || resource.imageAlias != BufferResource::NoImageAlias) continue;
+        if (plan.uniformFill.fill.kind == UniformFillKind::Buffer && plan.uniformFill.fill.resource == buffer) continue;
+        const auto& source = plan.descriptorSources[resource.source];
+        if (source.tableColumn || source.dwordCount < 4u) continue;
+        const auto word = userRegister(source.dwords[0]);
+        if (!word) continue;
+        candidates.emplace_back(buffer, *word);
+        candidateSource[resource.source] = true;
+    }
+    if (candidates.empty()) return {};
+    std::vector<const IrValue*> stack;
+    for (std::size_t index = 0; index < plan.descriptorSources.size(); ++index) {
+        const auto& source = plan.descriptorSources[index];
+        for (std::uint32_t dword = candidateSource[index] ? 1u : 0u; dword < source.dwords.size(); ++dword) {
+            if (source.dwords[dword] != nullptr) stack.push_back(source.dwords[dword]);
+        }
+    }
+    for (const auto& read : plan.srtReads) stack.push_back(read.value);
+    for (const auto& block : plan.controlFlow) stack.push_back(block.condition);
+    for (const auto* value : plan.uniformFill.values) stack.push_back(value);
+    std::unordered_set<const IrValue*> visited;
+    std::vector<bool> consumed(plan.userDataCount, false);
+    while (!stack.empty()) {
+        const auto* raw = stack.back();
+        stack.pop_back();
+        if (raw == nullptr) continue;
+        const auto* value = raw->Resolve();
+        if (!visited.insert(value).second) continue;
+        if (const auto word = userRegister(value)) consumed[*word] = true;
+        for (const auto* argument : value->Arguments()) stack.push_back(argument);
+    }
+    std::erase_if(candidates, [&](const auto& candidate) { return consumed[candidate.second]; });
+    return candidates;
+}
+
+}
+
+const std::vector<std::pair<std::uint32_t, std::uint32_t>>& InlineBufferBaseWords(const IrResourcePlan& plan) {
+    auto& slot = *plan.inlineBufferBases;
+    std::call_once(slot.once, [&] { slot.words = findInlineBufferBaseWords(plan); });
+    return slot.words;
 }
 
 std::shared_ptr<const ResourceCapture> CaptureResources(const RecompileRequest& request, const SrtRuntime& runtime) {

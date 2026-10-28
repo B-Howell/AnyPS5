@@ -47,6 +47,8 @@ struct DispatchVariant {
     std::vector<std::pair<std::uint32_t, std::uint32_t>> shaderDataPatches;
     std::uint64_t userDataMask = ~std::uint64_t{0};
     std::uint64_t forwardedWords = 0;
+    std::uint64_t baseWords = 0;
+    std::vector<std::array<std::uint32_t, 3>> inlineBases;
     std::shared_ptr<const ShaderRecompiler::ShaderVertexStageInfo> vertexInfo;
 
     std::shared_ptr<ShaderMemory> memory;

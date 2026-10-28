@@ -87,7 +87,7 @@ namespace ShaderRecompiler::ShaderDiskCache {
 #if defined(__linux__) && defined(__x86_64__) && defined(__GLIBCXX__)
 static_assert(sizeof(CompiledShaderArtifact) == 288, "CompiledShaderArtifact changed: update the artifact encoder");
 static_assert(sizeof(ShaderInvocation) == 216, "ShaderInvocation changed: update the invocation encoder");
-static_assert(sizeof(RecompileResult) == 552, "RecompileResult changed: update EncodeResult and DecodeResult");
+static_assert(sizeof(RecompileResult) == 576, "RecompileResult changed: update EncodeResult and DecodeResult");
 static_assert(sizeof(DescriptorBinding) == 656, "DescriptorBinding changed: update the binding encoder");
 static_assert(sizeof(VertexAttribute) == 32, "VertexAttribute changed: update the attribute encoder");
 static_assert(sizeof(VertexInput) == 16, "VertexInput changed: update the vertex input encoder");
@@ -102,10 +102,10 @@ static_assert(sizeof(StageInput) == 56, "StageInput changed: update the info enc
 static_assert(sizeof(StageOutput) == 48, "StageOutput changed: update the info encoder");
 static_assert(sizeof(IrBindingLayout) == 80, "IrBindingLayout changed: update the layout encoder");
 static_assert(sizeof(IrDescriptorBinding) == 32, "IrDescriptorBinding changed: update the layout encoder");
-static_assert(sizeof(BindingAllocationResult) == 184, "BindingAllocationResult changed: update the allocation encoder");
+static_assert(sizeof(BindingAllocationResult) == 208, "BindingAllocationResult changed: update the allocation encoder");
 static_assert(sizeof(CompiledBindingLayout) == 88, "CompiledBindingLayout changed: update the allocation encoder");
 static_assert(sizeof(BindingLayout) == 16, "BindingLayout changed: update BuildKey");
-static_assert(sizeof(IrResourcePlan) == 728, "IrResourcePlan changed: update EncodePlan and DecodePlan");
+static_assert(sizeof(IrResourcePlan) == 744, "IrResourcePlan changed: update EncodePlan and DecodePlan");
 static_assert(sizeof(IrValue) == 128, "IrValue changed: update the plan value encoder");
 static_assert(sizeof(GuestRegister) == 8, "GuestRegister changed: update the plan value encoder");
 static_assert(sizeof(MemoryInfo) == 80, "MemoryInfo changed: update the plan encoder");
@@ -146,7 +146,7 @@ static_assert(fieldCount<SamplerResource>() == 8, "SamplerResource changed: upda
 static_assert(fieldCount<SampledResourcePair>() == 3, "SampledResourcePair changed: update the info encoder");
 static_assert(fieldCount<StageInput>() == 5, "StageInput changed: update the info encoder");
 static_assert(fieldCount<StageOutput>() == 4, "StageOutput changed: update the info encoder");
-static_assert(fieldCount<IrResourcePlan>() == 24, "IrResourcePlan changed: update EncodePlan and DecodePlan");
+static_assert(fieldCount<IrResourcePlan>() == 25, "IrResourcePlan changed: update EncodePlan and DecodePlan");
 static_assert(fieldCount<GuestRegister>() == 2, "GuestRegister changed: update the plan value encoder");
 static_assert(fieldCount<MemoryInfo>() == 32, "MemoryInfo changed: update the plan encoder");
 static_assert(fieldCount<DescriptorSource>() == 3, "DescriptorSource changed: update the plan encoder");
@@ -1902,6 +1902,10 @@ void EncodeResult(const RecompileResult& result, std::vector<std::byte>& out) {
     encodeInvocation(writer, result);
     writer.Value(result.workgroupMemoryDwords);
     writer.Values(std::span<const std::uint32_t>(result.shaderDataUserWords));
+    std::vector<std::uint32_t> slots;
+    slots.reserve(result.bufferBaseSlots.size() * 3u);
+    for (const auto& slot : result.bufferBaseSlots) slots.insert(slots.end(), slot.begin(), slot.end());
+    writer.Values(std::span<const std::uint32_t>(slots));
 }
 
 bool DecodeResult(std::span<const std::byte> bytes, RecompileResult& result, std::shared_ptr<const void> owner) {
@@ -1910,6 +1914,11 @@ bool DecodeResult(std::span<const std::byte> bytes, RecompileResult& result, std
     decodeInvocation(reader, result);
     reader.Value(result.workgroupMemoryDwords);
     reader.Values(result.shaderDataUserWords);
+    std::vector<std::uint32_t> slots;
+    reader.Values(slots);
+    if (slots.size() % 3u != 0) return false;
+    result.bufferBaseSlots.clear();
+    for (std::size_t slot = 0; slot < slots.size(); slot += 3u) result.bufferBaseSlots.push_back({slots[slot], slots[slot + 1u], slots[slot + 2u]});
     result.cacheHit = false;
     return reader.Done() && result.runtimeAbiVersion == RuntimeAbi::Version;
 }
