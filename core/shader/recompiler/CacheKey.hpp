@@ -320,6 +320,7 @@ private:
         append(key, value.tessellation);
         append(key, value.nonConstantImageOffsets);
         append(key, value.srgbDecodeFormats);
+        append(key, value.maxImageArrayLayers);
         append(key, value.narrowSubgroupClock);
         append(key, value.fragmentBarycentricBuiltins);
         append(key, value.float64DenormPreserve);

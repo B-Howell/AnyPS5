@@ -141,12 +141,12 @@ constexpr std::size_t fieldCount() {
 
 static_assert(fieldCount<ShaderInfo>() == 24, "ShaderInfo changed: update the info encoder");
 static_assert(fieldCount<BufferResource>() == 12, "BufferResource changed: update the info encoder");
-static_assert(fieldCount<ImageResource>() == 44, "ImageResource changed: update the info encoder");
+static_assert(fieldCount<ImageResource>() == 47, "ImageResource changed: update the info encoder");
 static_assert(fieldCount<SamplerResource>() == 8, "SamplerResource changed: update the info encoder");
 static_assert(fieldCount<SampledResourcePair>() == 3, "SampledResourcePair changed: update the info encoder");
 static_assert(fieldCount<StageInput>() == 5, "StageInput changed: update the info encoder");
 static_assert(fieldCount<StageOutput>() == 4, "StageOutput changed: update the info encoder");
-static_assert(fieldCount<IrResourcePlan>() == 24, "IrResourcePlan changed: update EncodePlan and DecodePlan");
+static_assert(fieldCount<IrResourcePlan>() == 25, "IrResourcePlan changed: update EncodePlan and DecodePlan");
 static_assert(fieldCount<GuestRegister>() == 2, "GuestRegister changed: update the plan value encoder");
 static_assert(fieldCount<MemoryInfo>() == 32, "MemoryInfo changed: update the plan encoder");
 static_assert(fieldCount<DescriptorSource>() == 3, "DescriptorSource changed: update the plan encoder");
@@ -805,6 +805,9 @@ void encodeShaderInfo(Writer& writer, const ShaderInfo& info) {
         out.Value(image.foldTexelOffsetsOnly);
         out.Value(image.convertedSamples);
         out.Value(image.remappedDepth1D);
+        out.Value(image.layerRowsCompatible);
+        out.Value(image.layerRows);
+        out.Value(image.maxArrayLayers);
         out.Value(image.optionalDescriptor);
         out.Value(image.byElements);
         out.Value(image.byComponents);
@@ -914,6 +917,9 @@ void decodeShaderInfo(Reader& reader, ShaderInfo& info) {
         in.Value(image.foldTexelOffsetsOnly);
         in.Value(image.convertedSamples);
         in.Value(image.remappedDepth1D);
+        in.Value(image.layerRowsCompatible);
+        in.Value(image.layerRows);
+        in.Value(image.maxArrayLayers);
         in.Value(image.optionalDescriptor);
         in.Value(image.byElements);
         in.Value(image.byComponents);
@@ -1104,6 +1110,7 @@ bool encodePlan(Writer& writer, const IrResourcePlan& plan) {
     writer.Value(plan.userDataBase);
     writer.Value(plan.userDataCount);
     writer.Value(plan.srgbDecodeFormats);
+    writer.Value(plan.maxImageArrayLayers);
     writer.List(plan.blockStorage, [](Writer& out, const std::unique_ptr<IrBlock>& block) { out.Value(block->Id()); });
     writer.Value<std::uint64_t>(plan.valueStorage.Size());
     for (const auto& stored : plan.valueStorage) {
@@ -1212,6 +1219,7 @@ bool decodePlan(Reader& reader, IrResourcePlan& plan) {
     reader.Value(plan.userDataBase);
     reader.Value(plan.userDataCount);
     reader.Value(plan.srgbDecodeFormats);
+    reader.Value(plan.maxImageArrayLayers);
     std::vector<std::uint32_t> blockIds;
     reader.Values(blockIds);
     std::vector<PlanValueRecord> records;

@@ -360,6 +360,7 @@ IrProgram PrepareResourceProgram(const RecompileRequest& request, ShaderPreparat
     deadCodeEliminator.Eliminate(program);
     dumpIr("resources");
     program.Resources().srgbDecodeFormats = request.target.srgbDecodeFormats;
+    program.Resources().maxImageArrayLayers = request.target.maxImageArrayLayers;
     if (request.context.convertedSamples) {
         for (auto& image : program.Resources().info.images) image.convertedSamples = true;
     }

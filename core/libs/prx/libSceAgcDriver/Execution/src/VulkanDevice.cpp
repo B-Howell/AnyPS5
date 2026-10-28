@@ -4061,6 +4061,7 @@ ShaderRecompiler::SpirvTarget VulkanDevice::buildTarget() const {
     target.pixelFunctionStorageDwords = state->pixelFunctionStorageDwords;
     target.deviceScopeLdsMemoryBarriers = !state->workgroupScopeFences;
     target.srgbDecodeFormats = state->srgbDecodeFormats & ~state->srgbCopyFormats;
+    target.maxImageArrayLayers = limits.maxImageArrayLayers;
     target.vertexSubgroups = (state->subgroup.supportedStages & VK_SHADER_STAGE_VERTEX_BIT) != 0;
     if (state->meshShader) {
         const auto& mesh = state->meshLimits;

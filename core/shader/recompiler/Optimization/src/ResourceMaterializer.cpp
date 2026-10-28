@@ -59,6 +59,7 @@ struct DecodedImage {
     bool depthUnorm16 = false;
     IrBufferFormat packedFormat = IrBufferFormat::Invalid;
     bool srgbDecode = false;
+    bool layerRows = false;
 };
 
 ShaderBufferResource decodeBufferDescriptor(const DescriptorValue& value) {
@@ -223,6 +224,14 @@ ImageDecode inspectImageDescriptor(const DescriptorValue& descriptor, const Imag
     }
     if (GcnGuestShaders() && imageCoordinates(decoded.dimension) != imageCoordinates(base.dimension)) {
         throw std::runtime_error("GCN image instruction on a descriptor of type " + std::to_string(static_cast<std::uint32_t>(rawImageType(descriptor))) + " needs a different address count than its inferred dimension; not implemented");
+    }
+    if (decoded.dimension == RdnaImageDimension::Dim1DArray && base.layerRowsCompatible && base.maxArrayLayers != 0u && base.resourceClass != ImageResourceClass::Storage && base.table == NoTable && !base.depthCompare) {
+        const auto lastArray = descriptor.dwords[4] & 0x1fffu;
+        const auto baseArray = (descriptor.dwords[4] >> 16u) & 0x1fffu;
+        if (baseArray <= lastArray && lastArray - baseArray >= base.maxArrayLayers) {
+            decoded.dimension = RdnaImageDimension::Dim2D;
+            decoded.layerRows = true;
+        }
     }
     decoded.cube = descriptorIsCube(descriptor);
     const auto format = rawImageFormat(descriptor);
@@ -2073,6 +2082,12 @@ std::vector<ImageResource> ResourceMaterializer::RuntimeImageModes(const ImageRe
             cube.cube = true;
             modes.push_back(cube);
         }
+        if (image.dimension == RdnaImageDimension::Dim1DArray && image.layerRowsCompatible && image.maxArrayLayers != 0u && !storage && !table && !depth && !image.depthCompare && conversion == IrBufferFormat::Invalid && packed == IrBufferFormat::Invalid) {
+            auto rows = mode;
+            rows.dimension = RdnaImageDimension::Dim2D;
+            rows.layerRows = true;
+            modes.push_back(rows);
+        }
         if (image.dimension == RdnaImageDimension::Dim1DArray || image.dimension == RdnaImageDimension::Dim2DArray || image.dimension == RdnaImageDimension::Dim2DMsaaArray) {
             auto plain = mode;
             plain.dimension = image.dimension == RdnaImageDimension::Dim1DArray ? RdnaImageDimension::Dim1D : image.dimension == RdnaImageDimension::Dim2DArray ? RdnaImageDimension::Dim2D : RdnaImageDimension::Dim2DMsaa;
@@ -2194,6 +2209,7 @@ bool ResourceMaterializer::NullImageDescriptor(const ImageResource& image, const
 const char* ResourceMaterializer::UnnormalizedSampleMismatch(const ImageResource& image) {
     if (image.table != NoTable) return "samples an image selected at run time";
     if (image.constantSwizzle) return nullptr;
+    if (image.layerRows) return "samples a 1D array laid out as rows of a 2D image";
     if ((image.dimension != RdnaImageDimension::Dim1D && image.dimension != RdnaImageDimension::Dim2D) || image.cube) return "samples a 1D-array, 2D-array, 3D, cube or multisampled image";
     if (image.depthCompare) return "is used with depth comparison";
     if (image.conversionFormat != IrBufferFormat::Invalid || image.packed) return "samples an image that needs a format conversion or packed access";
@@ -2246,7 +2262,7 @@ RuntimeImageModeMatch ResourceMaterializer::TryRuntimeImageMode(const ImageResou
         const auto& mode = modes[index];
         if (mode.constantSwizzle) continue;
         if (((mode.emulatedCompare & EmulatedCompare::Enabled) != 0u) != emulated) continue;
-        if (mode.numericClass == decoded.numericClass && mode.dimension == decoded.dimension && mode.conversionFormat == decoded.conversionFormat && mode.packedFormat == decoded.packedFormat && mode.cube == decoded.cube && mode.depthBits == decoded.depthBits && mode.depthUnorm16 == decoded.depthUnorm16 && mode.srgbDecode == decoded.srgbDecode) {
+        if (mode.numericClass == decoded.numericClass && mode.dimension == decoded.dimension && mode.conversionFormat == decoded.conversionFormat && mode.packedFormat == decoded.packedFormat && mode.cube == decoded.cube && mode.depthBits == decoded.depthBits && mode.depthUnorm16 == decoded.depthUnorm16 && mode.srgbDecode == decoded.srgbDecode && mode.layerRows == decoded.layerRows) {
             result.mode = index;
             return result;
         }
@@ -2307,6 +2323,7 @@ void ResourceMaterializer::ApplyStaticInterface(IrProgram& program, bool nativeS
     bool tables = false;
     for (auto& image : images) {
         image.srgbDecodeFormats = resources.srgbDecodeFormats;
+        image.maxArrayLayers = resources.maxImageArrayLayers;
         image.numericClass = image.atomic ? IrTextureNumericClass::Uint : IrTextureNumericClass::Float;
         image.mipCount = image.mipMode == ImageMipMode::DynamicStorage ? RuntimeAbi::StorageMipSlots : 1u;
         if (image.table == NoTable) continue;
@@ -2538,6 +2555,7 @@ IrResourcePlan ResourceMaterializer::ExtractPlan(const IrProgram& program) const
     plan.userDataBase = source.userDataBase;
     plan.userDataCount = source.userDataCount;
     plan.srgbDecodeFormats = source.srgbDecodeFormats;
+    plan.maxImageArrayLayers = source.maxImageArrayLayers;
     plan.memoryInfo = source.memoryInfo;
     plan.descriptorSources = source.descriptorSources;
     plan.controlFlow = source.controlFlow;

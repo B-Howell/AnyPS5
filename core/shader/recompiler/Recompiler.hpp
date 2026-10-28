@@ -313,6 +313,7 @@ struct SpirvTarget {
     std::optional<TessellationTargetLimits> tessellation;
     bool nonConstantImageOffsets = false;
     std::uint32_t srgbDecodeFormats = 0;
+    std::uint32_t maxImageArrayLayers = 0;
     bool narrowSubgroupClock = false;
     bool fixedPushSlots = false;
     bool float64DenormPreserve = false;
