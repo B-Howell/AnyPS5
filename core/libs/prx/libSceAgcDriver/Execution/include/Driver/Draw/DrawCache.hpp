@@ -131,6 +131,8 @@ struct StageCapture {
     ShaderRecompiler::SrtUserDataUse userDataUse;
     std::uint64_t userDataMask = ~std::uint64_t{0};
     std::uint64_t forwardedWords = 0;
+    std::uint64_t baseWords = 0;
+    std::vector<std::array<std::uint32_t, 3>> inlineBases;
 };
 
 struct RelocatableUserWord {

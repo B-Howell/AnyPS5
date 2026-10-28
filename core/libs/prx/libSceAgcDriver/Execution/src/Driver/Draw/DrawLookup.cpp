@@ -234,10 +234,12 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                 auto& candidates = dataCandidates[i];
                 for (const auto& variant : dataEntry->stages[i]) {
                     bool usedEqual = true;
-                    bool forwarded = false;
+                    bool patched = false;
                     for (std::size_t w = 0; w < now.size() && usedEqual; ++w) {
                         if (now[w] == was[w] || (w < 64u && ((variant->userDataMask >> w) & 1u) == 0)) continue;
-                        if (w < 64u && ((variant->forwardedWords >> w) & 1u) != 0) forwarded = true;
+                        const bool forwarded = w < 64u && ((variant->forwardedWords >> w) & 1u) != 0;
+                        const bool base = w < 64u && ((variant->baseWords >> w) & 1u) != 0 && was[w] != 0 && now[w] != 0 && ((was[w] ^ now[w]) & 3u) == 0;
+                        if (forwarded || base) patched = true;
                         else usedEqual = false;
                     }
                     if (!usedEqual) continue;
@@ -247,13 +249,13 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                     auto result = validateVariant(programs[i].binary.codeAddress, submission.queue, *variant, regions, imagesFlushed, runsSynced, sampling);
                     if (gateRetry() && (result == EntryOutcome::PublishMoved || result == EntryOutcome::PendingMoved)) result = validateVariant(programs[i].binary.codeAddress, submission.queue, *variant, regions, imagesFlushed, runsSynced, sampling);
                     if (result != EntryOutcome::Equal) continue;
-                    if (!forwarded) {
+                    if (!patched) {
                         candidates.emplace_back(variant, std::move(regions));
                         continue;
                     }
                     auto refreshed = cloneDrawVariant(*variant);
                     refreshed->userDataMask = variant->userDataMask;
-                    if (forwardUserWords(*refreshed, now)) candidates.emplace_back(std::move(refreshed), std::move(regions));
+                    if (patchUserWords(*refreshed, now)) candidates.emplace_back(std::move(refreshed), std::move(regions));
                 }
             }
         }

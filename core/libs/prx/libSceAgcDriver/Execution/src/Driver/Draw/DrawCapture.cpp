@@ -27,6 +27,35 @@ std::uint64_t ForwardedOnlyWords(const ShaderRecompiler::RecompileResult& compil
     return forwarded & ~otherUses;
 }
 
+void InlineBufferBases(StageCapture& stage, const ShaderRecompiler::IrResourcePlan& plan, std::span<const std::uint32_t> userData, std::uint64_t fetched, std::uint32_t hiddenWords) {
+    const auto& compiled = *stage.compiled;
+    std::uint64_t found = 0, refused = 0;
+    std::vector<std::array<std::uint32_t, 3>> bases;
+    for (const auto& [buffer, word] : ShaderRecompiler::InlineBufferBaseWords(plan)) {
+        if (word >= 64u) continue;
+        const auto bit = std::uint64_t{1} << word;
+        if (word < hiddenWords || word >= userData.size() || (fetched & bit) != 0 || userData[word] == 0) {
+            refused |= bit;
+            continue;
+        }
+        bool located = false;
+        for (const auto& [resource, binding, slot] : compiled.bufferBaseSlots) {
+            if (resource != buffer) continue;
+            if (binding >= compiled.bindings.size() || compiled.bindings[binding].role != ShaderRecompiler::DescriptorRole::GuestBuffers || slot >= compiled.bindings[binding].guestDescriptor.size() || compiled.bindings[binding].guestDescriptor[slot] != userData[word]) {
+                refused |= bit;
+                break;
+            }
+            bases.push_back({word, binding, slot});
+            located = true;
+        }
+        if (located) found |= bit;
+        else refused |= bit;
+    }
+    std::erase_if(bases, [&](const std::array<std::uint32_t, 3>& base) { return (refused >> base[0] & 1u) != 0; });
+    stage.baseWords = found & ~refused;
+    stage.inlineBases = std::move(bases);
+}
+
 void TraceMaterializationFailure(std::uint64_t token, const Submission& submission, std::size_t packetOffset, std::size_t stage, const char* phase, const std::exception_ptr& failure) {
     if (token == 0) return;
     const char* type = "unknown";
@@ -182,6 +211,9 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
     mask |= fetched;
     stageCapture.userDataMask = mask;
     stageCapture.forwardedWords = ForwardedOnlyWords(*stageCapture.compiled, walked | fetched, program.hiddenUserWords);
+    stageCapture.baseWords = 0;
+    stageCapture.inlineBases.clear();
+    if (capture->plan != nullptr) InlineBufferBases(stageCapture, *capture->plan, program.userData, fetched, program.hiddenUserWords);
     phaseTiming.Phase(DrawRowRecompile);
     return stageCapture.compiled;
 } catch (const std::exception& error) {
@@ -244,6 +276,8 @@ void Driver::cacheDrawStages(bool useDrawEntries, bool drawHit, const Pm4::DrawP
             variant->pushOffset = stageCapture.pushOffset;
             variant->userDataMask = stageCapture.userDataMask;
             variant->forwardedWords = stageCapture.forwardedWords;
+            variant->baseWords = stageCapture.baseWords;
+            variant->inlineBases = stageCapture.inlineBases;
             if (vertexInfos[i]) variant->vertexInfo = std::make_shared<const ShaderRecompiler::ShaderVertexStageInfo>(*vertexInfos[i]);
 
             std::vector<ShaderRecompiler::MemoryRegion> regions(stageCapture.regions.begin(), stageCapture.regions.end());

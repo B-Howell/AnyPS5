@@ -230,7 +230,7 @@ void ReadUserWordsChangeTheOutput(bool verify) {
     Require(closeTo(third, 255), "a reused pixel stage adding user word 2 changed to 0.75 wrote " + std::to_string(third) + ", expected 255");
 }
 
-void DirectBufferBaseMovesWithItsPayload() {
+void DirectBufferBaseMovesWithItsPayload(bool verify) {
     Registered(VertexHeader, TriangleVertexCode.data(), sizeof(TriangleVertexCode), 2);
     Registered(DirectBufferPixelHeader, DirectBufferPixelCode.data(), sizeof(DirectBufferPixelCode), 1);
     auto* ring = GuestBlock();
@@ -240,12 +240,12 @@ void DirectBufferBaseMovesWithItsPayload() {
         data[0] = std::bit_cast<std::uint32_t>(value);
         return data;
     };
-    const auto draw = [&](const std::uint32_t* data, bool setup) {
+    const auto draw = [&](const std::uint32_t* data, bool setup, std::uint32_t records = 16) {
         auto commands = setup ? Setup(true, DirectBufferPixelCode.data(), 4) : std::vector<std::uint32_t>{};
         const auto address = reinterpret_cast<std::uintptr_t>(data);
         Append(commands, 0x76, {0x00c, static_cast<std::uint32_t>(address)});
         Append(commands, 0x76, {0x00d, static_cast<std::uint32_t>(address >> 32u) & 0xffffu});
-        Append(commands, 0x76, {0x00e, 16});
+        Append(commands, 0x76, {0x00e, records});
         Append(commands, 0x76, {0x00f, 0x3004bfacu});
         Append(commands, 0x2d, {3, 2});
         Submit(std::move(commands));
@@ -260,7 +260,14 @@ void DirectBufferBaseMovesWithItsPayload() {
     const auto after = AgcDriver::DriverDetail::Driver::Get().DrawCacheCounters();
     Require(moved > repeated, "a draw whose descriptor base and payload both moved read the old payload: " + std::to_string(repeated) + " then " + std::to_string(moved) + " (" + Counts(after) + ", before: " + Counts(before) + ")");
     Require(after.dataHits == before.dataHits + 1, "a draw whose descriptor base and payload moved was not a data-only hit (" + Counts(after) + ", before: " + Counts(before) + ")");
-    Require(after.dataStagesCompiled - before.dataStagesCompiled >= 1, "a draw whose descriptor base moved reused the pixel stage built for the old base: the rebuild this test documents is gone, flip it to a reuse check (" + Counts(after) + ", before: " + Counts(before) + ")");
+    if (verify) Require(after.dataVerified - before.dataVerified == 2, "verify mode: the stages of a draw whose inline descriptor base moved were not both built and compared (" + Counts(after) + ", before: " + Counts(before) + ")");
+    else Require(after.dataStagesReused - before.dataStagesReused == 2 && after.dataStagesCompiled == before.dataStagesCompiled, "a draw whose inline buffer descriptor moved only its base compiled a stage again (" + Counts(after) + ", before: " + Counts(before) + ")");
+    const auto third = slot(2, 0.5f);
+    const auto resized = draw(third, false, 32);
+    const auto last = AgcDriver::DriverDetail::Driver::Get().DrawCacheCounters();
+    Require(resized > repeated && resized < moved, "a draw whose inline descriptor moved its base and changed its record count read " + std::to_string(resized) + ", expected between " + std::to_string(repeated) + " and " + std::to_string(moved));
+    Require(last.dataHits == after.dataHits + 1, "a draw whose inline descriptor changed its record count was not a data-only hit (" + Counts(last) + ", before: " + Counts(after) + ")");
+    Require(last.dataStagesCompiled - after.dataStagesCompiled == (verify ? 2u : 1u) && (verify || last.dataStagesReused - after.dataStagesReused == 1), "a draw whose inline descriptor changed its record count did not compile its pixel stage again (" + Counts(last) + ", before: " + Counts(after) + ")");
 }
 
 }
@@ -277,7 +284,7 @@ int main() {
         const bool verify = std::getenv("APS5_VERIFY_DRAW_DATA_HITS") != nullptr;
         UnreadUserWordsKeepTheStage(verify);
         ReadUserWordsChangeTheOutput(verify);
-        DirectBufferBaseMovesWithItsPayload();
+        DirectBufferBaseMovesWithItsPayload(verify);
         AgcDriverShutdown_nid_postfix();
         std::cout << "Data-only hits " << (verify ? "verified" : "reused") << " the stages whose read user words did not change\n";
         return 0;

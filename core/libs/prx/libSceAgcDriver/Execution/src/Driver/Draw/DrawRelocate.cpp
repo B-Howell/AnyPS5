@@ -259,18 +259,29 @@ std::shared_ptr<DispatchVariant> Driver::cloneDrawVariant(const DispatchVariant&
     copy->pushOffset = variant.pushOffset;
     copy->vertexInfo = variant.vertexInfo;
     copy->forwardedWords = variant.forwardedWords;
+    copy->baseWords = variant.baseWords;
+    copy->inlineBases = variant.inlineBases;
     copy->shaderDataPatches = variant.shaderDataPatches;
     return copy;
 }
 
-bool Driver::forwardUserWords(DispatchVariant& variant, std::span<const std::uint32_t> userData) {
+bool Driver::patchUserWords(DispatchVariant& variant, std::span<const std::uint32_t> userData) {
     applyShaderDataPatches(variant);
     const auto& compiled = *variant.compiled;
+    const auto patchable = variant.forwardedWords | variant.baseWords;
     const auto data = std::find_if(compiled.bindings.begin(), compiled.bindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ShaderData; });
     std::vector<std::pair<std::uint32_t, std::uint32_t>> patches;
+    std::vector<std::array<std::uint32_t, 3>> bases;
+    for (const auto& [word, binding, slot] : variant.inlineBases) {
+        if (word >= userData.size() || binding >= compiled.bindings.size() || compiled.bindings[binding].role != ShaderRecompiler::DescriptorRole::GuestBuffers || slot >= compiled.bindings[binding].guestDescriptor.size()) return false;
+        const auto held = compiled.bindings[binding].guestDescriptor[slot];
+        if (held == userData[word]) continue;
+        if (held == 0 || userData[word] == 0 || ((held ^ userData[word]) & 3u) != 0) return false;
+        bases.push_back({binding, slot, userData[word]});
+    }
     for (std::uint32_t slot = 0; slot < compiled.shaderDataUserWords.size(); ++slot) {
         const auto word = compiled.shaderDataUserWords[slot];
-        if (word >= 64u || (variant.forwardedWords >> word & 1u) == 0) continue;
+        if (word >= 64u || (patchable >> word & 1u) == 0) continue;
         if (word >= userData.size()) return false;
         std::uint32_t held = 0;
         if (data != compiled.bindings.end()) {
@@ -283,14 +294,15 @@ bool Driver::forwardUserWords(DispatchVariant& variant, std::span<const std::uin
         }
         if (held != userData[word]) patches.emplace_back(slot, userData[word]);
     }
-    if (patches.empty()) return true;
-    auto forwarded = std::make_shared<ShaderRecompiler::RecompileResult>(compiled);
-    const auto binding = std::find_if(forwarded->bindings.begin(), forwarded->bindings.end(), [](const ShaderRecompiler::DescriptorBinding& candidate) { return candidate.role == ShaderRecompiler::DescriptorRole::ShaderData; });
+    if (patches.empty() && bases.empty()) return true;
+    auto patched = std::make_shared<ShaderRecompiler::RecompileResult>(compiled);
+    const auto binding = std::find_if(patched->bindings.begin(), patched->bindings.end(), [](const ShaderRecompiler::DescriptorBinding& candidate) { return candidate.role == ShaderRecompiler::DescriptorRole::ShaderData; });
     for (const auto& [slot, value] : patches) {
-        if (binding != forwarded->bindings.end()) binding->guestDescriptor[slot] = value;
-        else std::memcpy(forwarded->pushConstants.data() + static_cast<std::size_t>(slot) * sizeof(std::uint32_t), &value, sizeof(value));
+        if (binding != patched->bindings.end()) binding->guestDescriptor[slot] = value;
+        else std::memcpy(patched->pushConstants.data() + static_cast<std::size_t>(slot) * sizeof(std::uint32_t), &value, sizeof(value));
     }
-    variant.compiled = std::move(forwarded);
+    for (const auto& [buffers, slot, value] : bases) patched->bindings[buffers].guestDescriptor[slot] = value;
+    variant.compiled = std::move(patched);
     return true;
 }
 

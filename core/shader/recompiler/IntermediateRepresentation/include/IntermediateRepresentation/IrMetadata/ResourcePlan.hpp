@@ -221,6 +221,11 @@ struct SrtTapeSlot {
     std::shared_ptr<const void> tape;
 };
 
+struct InlineBufferBaseSlot {
+    std::once_flag once;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> words;
+};
+
 struct IrResourcePlan {
     IrShaderStage stage = IrShaderStage::Unknown;
     std::uint64_t shaderHash = 0;
@@ -248,6 +253,7 @@ struct IrResourcePlan {
     ShaderInfo info;
     UniformFillPlan uniformFill;
     std::shared_ptr<SrtTapeSlot> tapeSlot = std::make_shared<SrtTapeSlot>();
+    std::shared_ptr<InlineBufferBaseSlot> inlineBufferBases = std::make_shared<InlineBufferBaseSlot>();
 };
 
 }
