@@ -197,20 +197,22 @@ int main() {
             return VulkanTestSkipped;
         }
         Layers = std::min(limit + 3u, MaxGuestLayers);
+        const auto baseWithin = Layers - limit;
+        const auto basePast = baseWithin - 1u;
         FillTexels();
         FillInput(limit);
-        const auto atLimit = Run(*device, 3, ClampEdge, 0, "point image_sample_lz on a view of exactly maxImageArrayLayers slices");
-        const auto atLimitLevel = Run(*device, 3, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of exactly maxImageArrayLayers slices", SampleLevel);
-        const auto pastLimit = Run(*device, 2, ClampEdge, 0, "point image_sample_lz on a view of maxImageArrayLayers + 1 slices");
-        const auto pastLimitLevel = Run(*device, 2, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of maxImageArrayLayers + 1 slices", SampleLevel);
+        const auto atLimit = Run(*device, baseWithin, ClampEdge, 0, "point image_sample_lz on a view of exactly maxImageArrayLayers slices");
+        const auto atLimitLevel = Run(*device, baseWithin, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of exactly maxImageArrayLayers slices", SampleLevel);
+        const auto pastLimit = Run(*device, basePast, ClampEdge, 0, "point image_sample_lz on a view of maxImageArrayLayers + 1 slices");
+        const auto pastLimitLevel = Run(*device, basePast, ClampEdge, Bilinear, "bilinear image_sample_l at levels 0 to 3.4 on a view of maxImageArrayLayers + 1 slices", SampleLevel);
         Require(atLimit.preparedModes < pastLimit.preparedModes && atLimitLevel.preparedModes < pastLimitLevel.preparedModes, "a shader that never saw a view past maxImageArrayLayers was given the layer-row mode");
         Require(!(atLimit.spirv == pastLimit.spirv) && !(atLimitLevel.spirv == pastLimitLevel.spirv), "a view past maxImageArrayLayers was sampled through the shader prepared for views within the limit");
         Require(pastLimit.promotedAtCapture && pastLimitLevel.promotedAtCapture, "capturing the first oversized view did not promote its registered shader");
         Require(atLimit.registeredVariant != pastLimit.registeredVariant && atLimitLevel.registeredVariant != pastLimitLevel.registeredVariant, "registered shaders used the same artifact before and after layer-row promotion");
-        const auto repeated = Run(*device, 2, ClampEdge, 0, "repeated oversized view through its promoted registered shader");
-        const auto returned = Run(*device, 3, ClampEdge, 0, "within-limit view through its promoted registered shader");
-        const auto repeatedLevel = Run(*device, 2, ClampEdge, Bilinear, "repeated explicit-LOD oversized view through its promoted registered shader", SampleLevel);
-        const auto returnedLevel = Run(*device, 3, ClampEdge, Bilinear, "within-limit explicit-LOD view through its promoted registered shader", SampleLevel);
+        const auto repeated = Run(*device, basePast, ClampEdge, 0, "repeated oversized view through its promoted registered shader");
+        const auto returned = Run(*device, baseWithin, ClampEdge, 0, "within-limit view through its promoted registered shader");
+        const auto repeatedLevel = Run(*device, basePast, ClampEdge, Bilinear, "repeated explicit-LOD oversized view through its promoted registered shader", SampleLevel);
+        const auto returnedLevel = Run(*device, baseWithin, ClampEdge, Bilinear, "within-limit explicit-LOD view through its promoted registered shader", SampleLevel);
         for (const auto* reused : {&repeated, &returned}) {
             Require(reused->registeredVariant == pastLimit.registeredVariant && reused->preparedEntries == pastLimit.preparedEntries && !reused->promotedAtCapture, "registered layer-row shader was prepared again instead of reused");
         }
