@@ -220,20 +220,7 @@ void Driver::relocateDrawEntry(const QueueState& queue, std::uint64_t alias, std
                 ++counters.refused;
                 continue;
             }
-            auto copy = std::make_shared<DispatchVariant>();
-            copy->runs = variant->runs;
-            copy->runBases = variant->runBases;
-            copy->relocatableWords = variant->relocatableWords;
-            copy->words = variant->words;
-            copy->forgetSerial = variant->forgetSerial;
-            copy->compiled = variant->compiled;
-            copy->meshIndexDescriptor = variant->meshIndexDescriptor;
-            copy->shader = variant->shader;
-            copy->dataPositions = variant->dataPositions;
-            copy->dataSlots = variant->dataSlots;
-            copy->flatBinding = variant->flatBinding;
-            copy->pushOffset = variant->pushOffset;
-            copy->vertexInfo = variant->vertexInfo;
+            auto copy = cloneDrawVariant(*variant);
             for (const auto& move : moves) {
                 if (move.program != i) continue;
                 const auto delta = AlignedWord(move.to) - AlignedWord(move.from);
@@ -254,6 +241,57 @@ void Driver::relocateDrawEntry(const QueueState& queue, std::uint64_t alias, std
     for (const auto& move : moves) patches.push_back({move.program, move.index, move.to});
     entry = std::move(relocated);
     decode = donor->decode;
+}
+
+std::shared_ptr<DispatchVariant> Driver::cloneDrawVariant(const DispatchVariant& variant) {
+    auto copy = std::make_shared<DispatchVariant>();
+    copy->runs = variant.runs;
+    copy->runBases = variant.runBases;
+    copy->relocatableWords = variant.relocatableWords;
+    copy->words = variant.words;
+    copy->forgetSerial = variant.forgetSerial;
+    copy->compiled = variant.compiled;
+    copy->meshIndexDescriptor = variant.meshIndexDescriptor;
+    copy->shader = variant.shader;
+    copy->dataPositions = variant.dataPositions;
+    copy->dataSlots = variant.dataSlots;
+    copy->flatBinding = variant.flatBinding;
+    copy->pushOffset = variant.pushOffset;
+    copy->vertexInfo = variant.vertexInfo;
+    copy->forwardedWords = variant.forwardedWords;
+    copy->shaderDataPatches = variant.shaderDataPatches;
+    return copy;
+}
+
+bool Driver::forwardUserWords(DispatchVariant& variant, std::span<const std::uint32_t> userData) {
+    applyShaderDataPatches(variant);
+    const auto& compiled = *variant.compiled;
+    const auto data = std::find_if(compiled.bindings.begin(), compiled.bindings.end(), [](const ShaderRecompiler::DescriptorBinding& binding) { return binding.role == ShaderRecompiler::DescriptorRole::ShaderData; });
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> patches;
+    for (std::uint32_t slot = 0; slot < compiled.shaderDataUserWords.size(); ++slot) {
+        const auto word = compiled.shaderDataUserWords[slot];
+        if (word >= 64u || (variant.forwardedWords >> word & 1u) == 0) continue;
+        if (word >= userData.size()) return false;
+        std::uint32_t held = 0;
+        if (data != compiled.bindings.end()) {
+            if (slot >= data->guestDescriptor.size()) return false;
+            held = data->guestDescriptor[slot];
+        } else {
+            const auto at = static_cast<std::size_t>(slot) * sizeof(std::uint32_t);
+            if (at + sizeof(std::uint32_t) > compiled.pushConstants.size()) return false;
+            std::memcpy(&held, compiled.pushConstants.data() + at, sizeof(held));
+        }
+        if (held != userData[word]) patches.emplace_back(slot, userData[word]);
+    }
+    if (patches.empty()) return true;
+    auto forwarded = std::make_shared<ShaderRecompiler::RecompileResult>(compiled);
+    const auto binding = std::find_if(forwarded->bindings.begin(), forwarded->bindings.end(), [](const ShaderRecompiler::DescriptorBinding& candidate) { return candidate.role == ShaderRecompiler::DescriptorRole::ShaderData; });
+    for (const auto& [slot, value] : patches) {
+        if (binding != forwarded->bindings.end()) binding->guestDescriptor[slot] = value;
+        else std::memcpy(forwarded->pushConstants.data() + static_cast<std::size_t>(slot) * sizeof(std::uint32_t), &value, sizeof(value));
+    }
+    variant.compiled = std::move(forwarded);
+    return true;
 }
 
 void Driver::applyShaderDataPatches(DispatchVariant& variant) {

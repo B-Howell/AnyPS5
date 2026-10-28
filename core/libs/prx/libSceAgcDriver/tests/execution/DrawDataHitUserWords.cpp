@@ -203,7 +203,7 @@ unsigned BrightestColorByte() {
     return brightest;
 }
 
-void ReadUserWordsChangeTheOutput() {
+void ReadUserWordsChangeTheOutput(bool verify) {
     Registered(VertexHeader, TriangleVertexCode.data(), sizeof(TriangleVertexCode), 2);
     Registered(ArithmeticPixelHeader, ArithmeticPixelCode.data(), sizeof(ArithmeticPixelCode), 1);
     PixelConstant[0] = 0.25f;
@@ -223,6 +223,11 @@ void ReadUserWordsChangeTheOutput() {
     const auto closeTo = [](unsigned value, unsigned expected) { return value + 2 >= expected && value <= expected + 2; };
     Require(closeTo(first, 128), "a pixel stage adding user word 2 (0.25) to a loaded 0.25 wrote " + std::to_string(first) + ", expected 128");
     Require(closeTo(second, 191), "a pixel stage adding user word 2 changed to 0.5 wrote " + std::to_string(second) + ", expected 191 (" + Counts(after) + ", before: " + Counts(before) + ")");
+    Require(after.dataHits == before.dataHits + 1, "a draw that changed only the forwarded user word 2 was not a data-only hit (" + Counts(after) + ", before: " + Counts(before) + ")");
+    if (verify) Require(after.dataVerified - before.dataVerified == 2, "verify mode: the stages of a draw that changed only a forwarded user word were not both built and compared (" + Counts(after) + ", before: " + Counts(before) + ")");
+    else Require(after.dataStagesReused - before.dataStagesReused == 2 && after.dataStagesCompiled == before.dataStagesCompiled, "a draw that changed only the user word the pixel stage forwards as shader data compiled a stage again (" + Counts(after) + ", before: " + Counts(before) + ")");
+    const auto third = draw(0.75f, false);
+    Require(closeTo(third, 255), "a reused pixel stage adding user word 2 changed to 0.75 wrote " + std::to_string(third) + ", expected 255");
 }
 
 void DirectBufferBaseMovesWithItsPayload() {
@@ -271,7 +276,7 @@ int main() {
         if (!libraries && std::getenv("APS5_NO_GPL") == nullptr) return VulkanTestSkipped;
         const bool verify = std::getenv("APS5_VERIFY_DRAW_DATA_HITS") != nullptr;
         UnreadUserWordsKeepTheStage(verify);
-        ReadUserWordsChangeTheOutput();
+        ReadUserWordsChangeTheOutput(verify);
         DirectBufferBaseMovesWithItsPayload();
         AgcDriverShutdown_nid_postfix();
         std::cout << "Data-only hits " << (verify ? "verified" : "reused") << " the stages whose read user words did not change\n";

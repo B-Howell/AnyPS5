@@ -234,8 +234,11 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                 auto& candidates = dataCandidates[i];
                 for (const auto& variant : dataEntry->stages[i]) {
                     bool usedEqual = true;
+                    bool forwarded = false;
                     for (std::size_t w = 0; w < now.size() && usedEqual; ++w) {
-                        if (now[w] != was[w] && (w >= 64u || ((variant->userDataMask >> w) & 1u) != 0)) usedEqual = false;
+                        if (now[w] == was[w] || (w < 64u && ((variant->userDataMask >> w) & 1u) == 0)) continue;
+                        if (w < 64u && ((variant->forwardedWords >> w) & 1u) != 0) forwarded = true;
+                        else usedEqual = false;
                     }
                     if (!usedEqual) continue;
                     if ((i == 0 && variant->pushOffset != 0) || std::any_of(candidates.begin(), candidates.end(), [&](const auto& candidate) { return candidate.first->pushOffset == variant->pushOffset; })) continue;
@@ -243,7 +246,14 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                     appendEntryRegions(*variant, regions);
                     auto result = validateVariant(programs[i].binary.codeAddress, submission.queue, *variant, regions, imagesFlushed, runsSynced, sampling);
                     if (gateRetry() && (result == EntryOutcome::PublishMoved || result == EntryOutcome::PendingMoved)) result = validateVariant(programs[i].binary.codeAddress, submission.queue, *variant, regions, imagesFlushed, runsSynced, sampling);
-                    if (result == EntryOutcome::Equal) candidates.emplace_back(variant, std::move(regions));
+                    if (result != EntryOutcome::Equal) continue;
+                    if (!forwarded) {
+                        candidates.emplace_back(variant, std::move(regions));
+                        continue;
+                    }
+                    auto refreshed = cloneDrawVariant(*variant);
+                    refreshed->userDataMask = variant->userDataMask;
+                    if (forwardUserWords(*refreshed, now)) candidates.emplace_back(std::move(refreshed), std::move(regions));
                 }
             }
         }
