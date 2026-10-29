@@ -350,13 +350,10 @@ void ForgetDirectoryStream_nid_no_patch(int descriptor) {
     g_forgetDirectoryDescriptor(descriptor);
 }
 
-static FileStream* OpenDirectoryStream(const std::filesystem::path& path) {
-    if (!g_openDirectoryDescriptor) throw std::runtime_error("fopen: libkernel has not registered its directory descriptors");
+static std::FILE* OpenDirectoryHandle(const std::filesystem::path& path, const std::string& = {}) {
+    if (!g_openDirectoryDescriptor) throw std::runtime_error("OpenDirectoryHandle: libkernel has not registered its directory descriptors");
     const auto filename = HostOpenName(path);
     if (!filename) { errno = GuestErrnoFromHost_nid_no_patch(errno); return nullptr; }
-    const auto release = [](void* pointer) { ::operator delete(pointer); };
-    std::unique_ptr<void, decltype(release)> storage(::operator new(sizeof(FileStream)), release);
-    auto preallocatedGate = std::make_shared<std::recursive_mutex>();
     const int descriptor = g_openDirectoryDescriptor(filename->c_str());
     if (descriptor < 0) {
         const int error = GuestErrnoFromHost_nid_no_patch(errno);
@@ -369,17 +366,18 @@ static FileStream* OpenDirectoryStream(const std::filesystem::path& path) {
         ForgetDirectoryStream_nid_no_patch(descriptor);
         ::_close(descriptor);
         errno = error;
-        return nullptr;
     }
+    return native;
+}
+
+static FileStream* OpenDirectoryStream(const std::filesystem::path& path) {
+    const auto release = [](void* pointer) { ::operator delete(pointer); };
+    std::unique_ptr<void, decltype(release)> storage(::operator new(sizeof(FileStream)), release);
+    auto preallocatedGate = std::make_shared<std::recursive_mutex>();
+    auto* native = OpenDirectoryHandle(path);
+    if (!native) return nullptr;
     auto* stream = new (storage.get()) FileStream(native, true, FileStream::Registration::Deferred);
-    try {
-        stream->MarkDirectory();
-    } catch (...) {
-        stream->~FileStream();
-        ForgetDirectoryStream_nid_no_patch(descriptor);
-        std::fclose(native);
-        throw;
-    }
+    stream->MarkDirectory();
     stream->Register_nid_no_patch(std::move(preallocatedGate));
     storage.release();
     return stream;
@@ -421,7 +419,20 @@ FileStream* APS5_VABI freopen_nid_postfix(const char* filename, const char* mode
                 errno = error;
             }
         } cleanup{stream, *reservation};
+#ifdef _WIN32
+        const bool directory = !parsed->writes && [&] {
+            std::error_code status;
+            return std::filesystem::is_directory(path, status);
+        }();
+        if (directory && stream->IsHostStandard()) throw std::runtime_error("freopen: reopening a standard stream onto a directory is not implemented");
+        bool reopened = stream->Reopen(path, parsed->native.c_str(), directory ? OpenDirectoryHandle : OpenNative);
+        if (reopened && directory) {
+            stream->MarkDirectory();
+            SynchronizeFileStreamAliases_nid_no_patch(stream);
+        }
+#else
         bool reopened = stream->Reopen(path, parsed->native.c_str(), OpenNative);
+#endif
         cleanup.armed = reopened;
         int captured = 0;
 #ifdef _WIN32
@@ -671,6 +682,8 @@ void SynchronizeFileStreamAliases_nid_no_patch(FileStream* source) {
         cur->guestError = source->guestError;
         cur->randomDevice = source->randomDevice;
         cur->directory = source->directory;
+        cur->lowSurrogate = source->lowSurrogate;
+        cur->pushedBack = source->pushedBack;
     }
 }
 
@@ -809,6 +822,7 @@ int APS5_VABI fseeko_nid_postfix(FileStream* stream, std::int64_t offset, int or
     const int nativeError = errno;
     stream->SyncStatus();
     if (result) errno = nativeError == EOVERFLOW ? 84 : nativeError;
+    else stream->SetLowSurrogate(0);
     return result;
 }
 

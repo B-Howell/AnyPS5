@@ -774,6 +774,47 @@ static int RunFcloseallChild(const char* self, const char* base, const char* mod
 #endif
 }
 
+static void CheckWideStateAfterAliasReopen(const std::string& base) {
+    const std::string path = base + ".wide-reopen";
+    std::FILE* replacement = std::fopen(path.c_str(), "wb");
+    Require(replacement != nullptr && std::fputs("Q", replacement) >= 0 && std::fclose(replacement) == 0, "Seeding the wide reopen replacement");
+    FileStream stream(std::tmpfile());
+    FileStream alias(stream.GetHandle());
+    Require(fputws_nid_postfix(u"\U0001f600", &stream) == 2, "Seeding supplementary wide input");
+    rewind_nid_postfix(&stream);
+    Require(getwc_nid_postfix(&stream) == 0xd83d, "Leaving a pending low surrogate on the source");
+    rewind_nid_postfix(&alias);
+    Require(getwc_nid_postfix(&alias) == 0xd83d, "Leaving a pending low surrogate on the alias");
+    Require(freopen_nid_postfix(path.c_str(), "rb", &stream) == &stream, "Reopening a source with pending wide state");
+    Require(getwc_nid_postfix(&alias) == u'Q', "Reopen must discard the alias's old low surrogate");
+    Require(getwc_nid_postfix(&stream) == -1, "Reopen must discard the source's old low surrogate");
+    Require(fclose_nid_postfix(&stream) == 0 && !alias.IsOpen(), "Closing the reopened source must detach its alias");
+    Require(std::remove(path.c_str()) == 0, "Removing the wide reopen replacement");
+}
+
+static void CheckZeroSizedTransfers(const std::string& base) {
+    const std::string path = base + ".zero";
+    auto* stream = fopen_nid_postfix(path.c_str(), "w+b");
+    Require(stream != nullptr && fwrite_nid_postfix("abcd", 1, 4, stream) == 4, "Creating the zero-sized transfer file");
+    Require(fflush_nid_postfix(stream) == 0 && fseek_nid_postfix(stream, 1, SEEK_SET) == 0, "Positioning the zero-sized transfer file");
+    std::array<char, 4> buffer{};
+    buffer.fill(0x5a);
+    Require(fread_nid_postfix(buffer.data(), 0, buffer.size(), stream) == 0, "fread with size 0 must return 0");
+    Require(fread_nid_postfix(buffer.data(), 1, 0, stream) == 0, "fread with count 0 must return 0");
+    Require(std::memcmp(buffer.data(), "ZZZZ", buffer.size()) == 0, "fread of nothing changed the buffer");
+    Require(ftell_nid_postfix(stream) == 1 && feof_nid_postfix(stream) == 0 && ferror_nid_postfix(stream) == 0, "fread of nothing changed the stream");
+    Require(fwrite_nid_postfix("xy", 0, 2, stream) == 0, "fwrite with size 0 must return 0");
+    Require(fwrite_nid_postfix("xy", 1, 0, stream) == 0, "fwrite with count 0 must return 0");
+    Require(ftell_nid_postfix(stream) == 1 && ferror_nid_postfix(stream) == 0, "fwrite of nothing changed the stream");
+    Require(fgetc_nid_postfix(stream) == 'b', "Zero-sized transfers moved the stream");
+    Require(fclose_nid_postfix(stream) == 0, "fclose after zero-sized transfers");
+    stream = fopen_nid_postfix(path.c_str(), "rb");
+    Require(stream != nullptr, "fopen of the zero-sized transfer file for reading");
+    Require(fwrite_nid_postfix("xy", 1, 0, stream) == 0 && fwrite_nid_postfix("xy", 0, 1, stream) == 0, "fwrite of nothing on a read-only stream must return 0");
+    Require(ferror_nid_postfix(stream) == 0, "fwrite of nothing on a read-only stream set the error indicator");
+    Require(fclose_nid_postfix(stream) == 0 && std::remove(path.c_str()) == 0, "Removing the zero-sized transfer file");
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[2], "--freopen-standard-owner-child") == 0) return FreopenStandardOwnerChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--freopen-aliases-child") == 0) return FreopenAliasesChild(argv[1]);
@@ -785,6 +826,8 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[2], "--reopen-snapshot-child") == 0) return ReopenSnapshotChild(argv[1]);
     Require(argc == 2);
     CheckExclusiveCppOpen(argv[1]);
+    CheckZeroSizedTransfers(argv[1]);
+    CheckWideStateAfterAliasReopen(argv[1]);
     CheckUpdateStreamReadsAfterWrites(argv[1]);
     CheckStreamWritesAfterReads(argv[1]);
     Require(_Stdout_nid_postfix.GetHandle() == stdout);

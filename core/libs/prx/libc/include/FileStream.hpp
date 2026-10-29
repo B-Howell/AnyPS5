@@ -89,6 +89,8 @@ class FileStream {
     bool guestError = false;
     bool randomDevice = false;
     bool directory = false;
+    char16_t lowSurrogate = 0;
+    unsigned pushedBack = 0;
     FileStream* _nextStream_nid_no_patch = nullptr;
     std::shared_ptr<std::recursive_mutex> _gate_nid_no_patch;
     std::uint64_t _registryId_nid_no_patch = 0;
@@ -178,6 +180,8 @@ public:
         StoreHandleAtomic_nid_no_patch(nullptr);
         _guest.flags = 0;
         _guest.descriptor = -1;
+        lowSurrogate = 0;
+        pushedBack = 0;
     }
 
     void RestoreHostStandard(std::FILE* stream, int kept) {
@@ -198,6 +202,8 @@ public:
     void MarkRandomDevice() {
         randomDevice = true;
         _guest.descriptor = -1;
+        lowSurrogate = 0;
+        pushedBack = 0;
     }
 
     bool IsRandomDevice() const {
@@ -216,6 +222,8 @@ public:
         _guest = {};
         guestError = false;
         randomDevice = false;
+        lowSurrogate = 0;
+        pushedBack = 0;
         directory = false;
         if (!handle) {
             StoreHandleAtomic_nid_no_patch(nullptr);
@@ -252,6 +260,8 @@ public:
         _guest = {};
         guestError = false;
         randomDevice = false;
+        lowSurrogate = 0;
+        pushedBack = 0;
 #ifdef _WIN32
         std::wstring wideMode;
         for (const char character : std::string_view(mode)) wideMode.push_back(static_cast<unsigned char>(character));
@@ -440,6 +450,24 @@ public:
         SyncStatus();
     }
 
+    char16_t TakeLowSurrogate() {
+        if (pushedBack != 0) return 0;
+        return std::exchange(lowSurrogate, char16_t{0});
+    }
+
+    void SetLowSurrogate(char16_t unit) {
+        lowSurrogate = unit;
+        pushedBack = 0;
+    }
+
+    void NotePushback() {
+        if (lowSurrogate != 0) ++pushedBack;
+    }
+
+    void NoteWideRead() {
+        if (pushedBack != 0) --pushedBack;
+    }
+
     int CloseNativeUnderGate_nid_no_patch() {
         auto* native = LoadHandleAtomic_nid_no_patch();
         if (!native) { errno = 9; return -1; }
@@ -451,6 +479,8 @@ public:
         StoreHandleAtomic_nid_no_patch(nullptr);
         _guest.flags = 0;
         _guest.descriptor = -1;
+        lowSurrogate = 0;
+        pushedBack = 0;
         DetachFileStreamAliasesForNative_nid_no_patch(this, native);
         return std::fclose(native);
     }
