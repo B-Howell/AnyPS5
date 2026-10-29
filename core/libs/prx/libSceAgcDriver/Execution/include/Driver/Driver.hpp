@@ -50,6 +50,10 @@ struct OverlayDriverCounters;
 
 namespace AgcDriver::DriverDetail {
 
+inline std::uint32_t ThreadDimensionGroups(std::uint32_t threads, std::uint32_t groupThreads) {
+    return static_cast<std::uint32_t>((std::uint64_t{threads} + groupThreads - 1u) / groupThreads);
+}
+
 struct DrawTail;
 
 class Driver {
@@ -486,7 +490,7 @@ private:
     std::atomic<void (*)()> aheadAdoptHook{nullptr};
 
     AgcDriver::Mutex writtenBuffersMutex;
-    std::deque<WrittenBuffer> writtenBuffers;
+    WrittenBufferIndex writtenBuffers;
     std::uint64_t writtenBufferSerial = 0;
     std::unordered_map<std::uint64_t, DwordEvidence> dwordEvidence;
     std::atomic<std::uint64_t> observedUnchanged{0};
