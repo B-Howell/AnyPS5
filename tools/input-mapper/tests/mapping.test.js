@@ -162,6 +162,23 @@ test('capture maps physical positions and distinguishes modifiers and keypad', (
     assert.equal(captureKey({code: 'KeyQ', key: 'a'}).value, 'Q');
 });
 
+test('captured media and browser keys round trip through INI bindings', () => {
+    const keys = {
+        MediaTrackNext: 'AudioNext', MediaTrackPrevious: 'AudioPrev', MediaStop: 'AudioStop',
+        MediaPlayPause: 'AudioPlay', MediaSelect: 'MediaSelect',
+        AudioVolumeMute: 'Mute', AudioVolumeUp: 'VolumeUp', AudioVolumeDown: 'VolumeDown',
+        BrowserSearch: 'AC Search', BrowserHome: 'AC Home', BrowserBack: 'AC Back',
+        BrowserForward: 'AC Forward', BrowserStop: 'AC Stop', BrowserRefresh: 'AC Refresh',
+        BrowserFavorites: 'AC Bookmarks'
+    };
+    for (const [code, value] of Object.entries(keys)) {
+        const captured = captureKey({code, key: 'ignored'});
+        assert.deepEqual(captured, {value}, code);
+        const ini = serialize([binding('Cross', 'KEY', captured.value)]);
+        assert.deepEqual(parseIni(ini).entries, [binding('Cross', 'KEY', value)], code);
+    }
+});
+
 test('capture rejects missing identifiers, composition and unsafe punctuation', () => {
     for (const event of [{code: 'Unidentified'}, {key: 'a'}, {code: 'IntlBackslash'}, {code: 'Semicolon'}, {code: 'KeyA', isComposing: true}, {code: 'Quote', key: 'Dead'}, {code: 'KeyA', key: 'Process'}]) {
         assert.ok(captureKey(event).error);
