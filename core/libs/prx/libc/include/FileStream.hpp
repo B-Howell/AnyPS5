@@ -38,6 +38,34 @@ extern "C" void ForgetDirectoryStream_nid_no_patch(int descriptor);
 extern "C" int _IO_switch_to_get_mode(std::FILE* stream);
 #endif
 extern "C" int DuplicateHostDescriptor_nid_no_patch(int descriptor);
+extern "C" void LibcRegisterClosedDescriptors_nid_no_patch(void* (*begin)(int descriptor), void (*end)(void* closing));
+extern "C" void* BeginClosingDescriptor_nid_no_patch(int descriptor);
+extern "C" void EndClosingDescriptor_nid_no_patch(void* closing);
+
+class ClosingDescriptor {
+public:
+    ClosingDescriptor([[maybe_unused]] std::FILE* stream, int descriptor)
+#ifdef _WIN32
+        : _stream(stream), _closing(BeginClosingDescriptor_nid_no_patch(descriptor)) {}
+#else
+        : _closing(BeginClosingDescriptor_nid_no_patch(descriptor)) {}
+#endif
+    ~ClosingDescriptor() { EndClosingDescriptor_nid_no_patch(_closing); }
+    ClosingDescriptor(const ClosingDescriptor&) = delete;
+    ClosingDescriptor& operator=(const ClosingDescriptor&) = delete;
+
+private:
+#ifdef _WIN32
+    struct LockedStream {
+        explicit LockedStream(std::FILE* value) : stream(value) { ::_lock_file(stream); }
+        ~LockedStream() { ::_unlock_file(stream); }
+        LockedStream(const LockedStream&) = delete;
+        LockedStream& operator=(const LockedStream&) = delete;
+        std::FILE* stream;
+    } _stream;
+#endif
+    void* _closing;
+};
 
 struct GuestFilePrefix {
     unsigned char* position = nullptr;
@@ -279,8 +307,10 @@ public:
             if (!IsHostStandard()) {
                 StoreHandleAtomic_nid_no_patch(nullptr);
                 std::erase(wideMode, L'x');
+                std::optional<ClosingDescriptor> closing(std::in_place, previous, replaced);
                 std::unique_ptr<std::FILE, int (*)(std::FILE*)> original(
                     ::_wfreopen(L"NUL", wideMode.c_str(), previous), std::fclose);
+                closing.reset();
                 if (original) {
                     std::unique_ptr<std::FILE, int (*)(std::FILE*)> replacement(open(filename, mode), std::fclose);
                     if (replacement && ::_dup2(::_fileno(replacement.get()), ::_fileno(original.get())) == 0)
@@ -300,7 +330,11 @@ public:
                 try {
                     std::FILE* const replacement = open(filename, mode);
                     if (replacement) {
-                        if (::_wfreopen(L"NUL", resetMode.c_str(), previous) == previous) {
+                        const auto reset = [&] {
+                            const ClosingDescriptor closing(previous, replaced);
+                            return ::_wfreopen(L"NUL", resetMode.c_str(), previous);
+                        }();
+                        if (reset == previous) {
                             const int moved = ::_dup2(_fileno(replacement), replaced);
                             const int error = errno;
                             std::fclose(replacement);
@@ -322,7 +356,11 @@ public:
         } else {
             const int kept = IsHostStandard() ? DuplicateHostDescriptor_nid_no_patch(replaced) : -1;
             if (kept >= 0) ::_lock_file(previous);
-            StoreHandleAtomic_nid_no_patch(::_wfreopen(filename.c_str(), wideMode.c_str(), previous));
+            const auto reopened = [&] {
+                const ClosingDescriptor closing(previous, replaced);
+                return ::_wfreopen(filename.c_str(), wideMode.c_str(), previous);
+            }();
+            StoreHandleAtomic_nid_no_patch(reopened);
             if (kept >= 0) RestoreHostStandard(previous, kept);
         }
         KeepStandardHandle_nid_no_patch(replaced, standard);
@@ -336,6 +374,7 @@ public:
         } catch (const std::system_error&) {
             errno = error;
         }
+        const ClosingDescriptor closing(previous, ::fileno(previous));
         const int kept = IsHostStandard() ? DuplicateHostDescriptor_nid_no_patch(::fileno(previous)) : -1;
         if (kept >= 0) ::flockfile(previous);
         StoreHandleAtomic_nid_no_patch(std::freopen(filename.c_str(), mode, previous));
@@ -489,6 +528,9 @@ public:
         const int descriptor = ::_fileno(native);
         GuestFileLockForget_nid_no_patch(descriptor);
         if (std::exchange(directory, false)) ForgetDirectoryStream_nid_no_patch(descriptor);
+        const ClosingDescriptor closing(native, descriptor);
+#else
+        const ClosingDescriptor closing(native, ::fileno(native));
 #endif
         StoreHandleAtomic_nid_no_patch(nullptr);
         _guest.flags = 0;

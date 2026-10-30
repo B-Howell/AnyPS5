@@ -1,6 +1,9 @@
 #include "prx/libc/include/Api.hpp"
 #include "prx/libc/include/FileStream.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include "prx/libkernel/File/include/File.hpp"
+#include "prx/libkernel/File/include/FileFlags.hpp"
+#include "prx/libkernel/File/include/RandomDevice.hpp"
 #include <array>
 #include <iterator>
 #include <algorithm>
@@ -12,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -874,6 +878,47 @@ static int ClosedStreamReopenChild(const std::string& base) {
     return contents ? 0 : 145;
 }
 
+static int FcloseallDescriptorReuseChild(const std::string& base) {
+    const std::string target = base + ".fcloseall-descriptor-target";
+    struct FileCleanup {
+        const std::string& target;
+        ~FileCleanup() {
+            std::remove(target.c_str());
+        }
+    } cleanup{target};
+    {
+        std::ofstream file(target, std::ios::binary | std::ios::trunc);
+        if (!file) return 171;
+        file << "0123456789";
+    }
+    const int descriptor = sceKernelOpen("/dev/urandom", SCE_KERNEL_O_RDONLY, 0);
+    if (descriptor < 0) return 172;
+    if (!File::IsRandomDevice(descriptor)) return 181;
+    FileStream* const stream = fdopen_nid_postfix(descriptor, "r");
+    if (!stream) {
+        sceKernelClose(descriptor);
+        return 173;
+    }
+    FileStream alias(stream->GetHandle());
+    fcloseall_nid_postfix();
+    if (alias.IsOpen()) return 174;
+    FileStream* const reopened = fopen_nid_postfix(target.c_str(), "r");
+    if (!reopened) return 175;
+    if (fileno_nid_postfix(reopened) != descriptor) {
+        fclose_nid_postfix(reopened);
+        return 176;
+    }
+    const bool staleRandomDevice = File::IsRandomDevice(descriptor);
+    std::array<char, 10> contents{};
+    if (sceKernelRead(descriptor, contents.data(), contents.size()) != static_cast<std::int64_t>(contents.size())) {
+        fclose_nid_postfix(reopened);
+        return 178;
+    }
+    if (fclose_nid_postfix(reopened) != 0) return 179;
+    if (staleRandomDevice) return 180;
+    return std::string_view(contents.data(), contents.size()) == "0123456789" ? 0 : 182;
+}
+
 static int ReopenSnapshotChild(const std::string& base) {
     const std::string path = base + ".reopen-snapshot";
     std::remove(path.c_str());
@@ -1004,6 +1049,7 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[2], "--freopen-standard-owner-child") == 0) return FreopenStandardOwnerChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--freopen-aliases-child") == 0) return FreopenAliasesChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--fcloseall-child") == 0) return FcloseallChild(argv[1]);
+    if (argc == 3 && std::strcmp(argv[2], "--fcloseall-descriptor-reuse-child") == 0) return FcloseallDescriptorReuseChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--fcloseall-lock-child") == 0) return FcloseallLockChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--fcloseall-fclose-race-child") == 0) return FcloseallFcloseRaceChild(argv[1]);
     if (argc == 3 && std::strcmp(argv[2], "--freopen-lock-child") == 0) return FreopenLockChild(argv[1]);
@@ -1139,6 +1185,8 @@ int main(int argc, char** argv) {
     Require(reopenSnapshot == 0, "reopen snapshot publication child failed");
     const int closedReopen = RunFcloseallChild(argv[0], argv[1], "--closed-reopen-child");
     Require(closedReopen == 0, "closed-stream reopen and close-all child failed");
+    const int descriptorReuse = RunFcloseallChild(argv[0], argv[1], "--fcloseall-descriptor-reuse-child");
+    Require(descriptorReuse == 0, "fcloseall descriptor reuse child failed");
     const int childResult = RunFcloseallChild(argv[0], argv[1]);
     Require(childResult == 0, "fcloseall child failed");
     const int lockResult = RunFcloseallChild(argv[0], argv[1], "--fcloseall-lock-child");
