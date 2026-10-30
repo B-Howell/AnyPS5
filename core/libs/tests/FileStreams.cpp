@@ -902,11 +902,36 @@ static int FcloseallDescriptorReuseChild(const std::string& base) {
     FileStream alias(stream->GetHandle());
     fcloseall_nid_postfix();
     if (alias.IsOpen()) return 174;
-    FileStream* const reopened = fopen_nid_postfix(target.c_str(), "r");
-    if (!reopened) return 175;
+#ifdef _WIN32
+    const bool descriptorClosed = ::_get_osfhandle(descriptor) == -1;
+#else
+    errno = 0;
+    const bool descriptorClosed = ::fcntl(descriptor, F_GETFD) == -1 && errno == EBADF;
+#endif
+    if (!descriptorClosed) return 184;
+#ifdef _WIN32
+    const int replacementDescriptor = ::_open(target.c_str(), _O_RDONLY | _O_BINARY);
+#else
+    const int replacementDescriptor = ::open(target.c_str(), O_RDONLY);
+#endif
+    if (replacementDescriptor < 0) return 175;
+    if (replacementDescriptor != descriptor) {
+#ifdef _WIN32
+        const int placement = ::_dup2(replacementDescriptor, descriptor);
+        const int surplusClose = ::_close(replacementDescriptor);
+        if (placement != 0) return 176;
+#else
+        const int placement = ::dup2(replacementDescriptor, descriptor);
+        const int surplusClose = ::close(replacementDescriptor);
+        if (placement != descriptor) return 176;
+#endif
+        if (surplusClose != 0) return 183;
+    }
+    FileStream* const reopened = fdopen_nid_postfix(descriptor, "r");
+    if (!reopened) return 185;
     if (fileno_nid_postfix(reopened) != descriptor) {
         fclose_nid_postfix(reopened);
-        return 176;
+        return 186;
     }
     const bool staleRandomDevice = File::IsRandomDevice(descriptor);
     std::array<char, 10> contents{};
