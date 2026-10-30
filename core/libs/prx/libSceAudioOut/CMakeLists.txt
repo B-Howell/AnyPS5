@@ -246,9 +246,10 @@ if(BUILD_TESTING)
     target_link_libraries(audio_out2_context_failure_tests PRIVATE libSceAudioOut libScePad libc)
     configure_windows_unwind(audio_out2_context_failure_tests)
     add_test(NAME audio_out2_context_failure COMMAND audio_out2_context_failure_tests)
-    set_tests_properties(audio_out2_context_failure PROPERTIES TIMEOUT 5)
+    add_test(NAME audio_out2_context_failure_device COMMAND audio_out2_context_failure_tests --device)
+    set_tests_properties(audio_out2_context_failure audio_out2_context_failure_device PROPERTIES TIMEOUT 5)
     if(WIN32)
-        set_tests_properties(audio_out2_context_failure PROPERTIES ENVIRONMENT_MODIFICATION
+        set_tests_properties(audio_out2_context_failure audio_out2_context_failure_device PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
     endif()
 
@@ -292,6 +293,16 @@ if(BUILD_TESTING)
     add_test(NAME audio_out_system_state COMMAND audio_out_system_state_tests)
     if(WIN32)
         set_tests_properties(audio_out_system_state PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
+    endif()
+
+    add_test_executable(audio_out2_context_handles_tests tests/AudioOut2ContextHandles.cpp)
+    target_include_directories(audio_out2_context_handles_tests PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(audio_out2_context_handles_tests PRIVATE libSceAudioOut libc)
+    configure_windows_unwind(audio_out2_context_handles_tests)
+    add_test(NAME audio_out2_context_handles COMMAND audio_out2_context_handles_tests)
+    if(WIN32)
+        set_tests_properties(audio_out2_context_handles PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceAudioOut>")
     endif()
 endif()
