@@ -968,8 +968,14 @@ if(BUILD_TESTING)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME guest_freopen_host_log_keep_failure COMMAND guest_freopen_host_log_tests keep-failure)
         set_tests_properties(guest_freopen_host_log_keep_failure PROPERTIES TIMEOUT 20)
-        add_test(NAME guest_freopen_host_log_keep_return_failure COMMAND guest_freopen_host_log_tests keep-return-failure)
-        set_tests_properties(guest_freopen_host_log_keep_return_failure PROPERTIES TIMEOUT 20)
+        add_test(NAME guest_freopen_host_log_native_closed_stdout COMMAND guest_freopen_host_log_tests native-closed-stdout
+            "${CMAKE_CURRENT_BINARY_DIR}/guest-freopen-native-closed-stdout.txt")
+        set_tests_properties(guest_freopen_host_log_native_closed_stdout PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE
+            FIXTURES_SETUP GuestFreopenNativeClosedStdout WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME guest_freopen_host_log_keep_return_failure COMMAND guest_freopen_host_log_tests keep-return-failure
+            "${CMAKE_CURRENT_BINARY_DIR}/guest-freopen-native-closed-stdout.txt")
+        set_tests_properties(guest_freopen_host_log_keep_return_failure PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE
+            FIXTURES_REQUIRED GuestFreopenNativeClosedStdout WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
     add_test_executable(guest_error_tests ${LIBS_INCLUDE_DIR}/tests/GuestErrors.cpp)
     target_include_directories(guest_error_tests PRIVATE ${LIBS_INCLUDE_DIR})

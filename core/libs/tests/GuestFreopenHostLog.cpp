@@ -185,9 +185,57 @@ static int KeepReturnFailure(int descriptor, const std::string& stamp) {
     return failures.empty() ? 0 : 1;
 }
 #else
-static int KeepReturnFailure(const std::string& stamp) {
-    const auto missing = std::filesystem::path("anyps5-freopen-host-log-missing-" + stamp) / "output.txt";
+static int NativeClosedStdout(const std::string& stamp, const std::filesystem::path& record) {
+    const auto temporary = record.string() + ".tmp";
+    std::error_code ignored;
+    std::filesystem::remove(record, ignored);
+    std::filesystem::remove(temporary, ignored);
+    const auto missing = std::filesystem::absolute(std::filesystem::path("anyps5-freopen-host-log-missing-" + stamp) / "output.txt");
+    Require(!std::filesystem::exists(missing.parent_path()), "the native baseline parent unexpectedly exists");
+    Require(HostFileno(stdout) == 1, "the native baseline stdout descriptor is not 1");
+    if (!failures.empty()) { HostWrite(2, failures); return 2; }
+    const int saved = HostDup(1);
+    if (saved < 0) return 2;
+    if (HostClose(1) != 0) { HostClose(saved); return 2; }
+    errno = E2BIG;
+    const bool reopened = std::freopen(missing.c_str(), "w", stdout) != nullptr;
+    const int openError = errno;
+    Require(HostDup2(saved, 1) == 0, "cannot restore native baseline stdout");
+    Require(HostClose(saved) == 0, "cannot close the native baseline saved descriptor");
+    Require(!reopened && openError != 0, "the native baseline did not produce a real open failure");
+    if (!failures.empty()) { HostWrite(2, failures); return 2; }
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        output << "native-closed-stdout-v1\n" << missing.string() << '\n' << reopened << ' ' << openError << '\n';
+        output.close();
+        Require(!output.fail(), "cannot write native baseline outcome");
+    }
+    if (failures.empty()) {
+        std::filesystem::rename(temporary, record, ignored);
+        Require(!ignored, "cannot publish native baseline outcome");
+    }
+    HostWrite(2, failures);
+    return failures.empty() ? 0 : 1;
+}
+
+static int KeepReturnFailure(const std::filesystem::path& record) {
+    std::string version;
+    std::string nativePath;
+    bool nativeReopened = true;
+    int nativeError = 0;
+    {
+        std::ifstream input(record, std::ios::binary);
+        std::getline(input, version);
+        std::getline(input, nativePath);
+        input >> nativeReopened >> nativeError;
+        Require(!input.fail() && version == "native-closed-stdout-v1" && !nativePath.empty() && !nativeReopened && nativeError != 0,
+                "the independent native baseline is missing or invalid");
+    }
+    std::error_code ignored;
+    Require(std::filesystem::remove(record, ignored) && !ignored, "cannot consume the native baseline outcome");
+    const std::filesystem::path missing(nativePath);
     Require(!std::filesystem::exists(missing.parent_path()), "the missing parent unexpectedly exists");
+    Require(HostFileno(stdout) == 1, "the Reopen stdout descriptor is not 1");
     if (!failures.empty()) { HostWrite(2, failures); return 2; }
     const int saved = HostDup(1);
     if (saved < 0) return 2;
@@ -212,14 +260,16 @@ static int KeepReturnFailure(const std::string& stamp) {
     }
     bool threw = false;
     bool reopened = true;
-    errno = E2BIG;
     try {
         auto lease = AcquireFileStreamLease_nid_no_patch(__stdoutp_nid_postfix, true);
         Require(lease.Valid(), "cannot lease stdout for the real Reopen branch");
         if (lease.Valid()) {
             const std::lock_guard<std::recursive_mutex> gate(*lease.Gate());
             Require(__stdoutp_nid_postfix->IsOpen(), "the standard FILE was detached before Reopen");
-            if (__stdoutp_nid_postfix->IsOpen()) reopened = __stdoutp_nid_postfix->Reopen(missing, "w");
+            if (__stdoutp_nid_postfix->IsOpen()) {
+                errno = E2BIG;
+                reopened = __stdoutp_nid_postfix->Reopen(missing, "w");
+            }
         }
     } catch (...) {
         threw = true;
@@ -229,12 +279,13 @@ static int KeepReturnFailure(const std::string& stamp) {
     Require(HostClose(saved) == 0, "cannot close the saved child descriptor");
     Require(kept < 0 && keepError == EBADF, "the real keep did not return EBADF");
     Require(stdout == original, "a failed keep replaced host stdout");
-    if (threw || reopened || openError != ENOENT) {
+    if (threw || reopened != nativeReopened || openError != nativeError) {
         const int savedError = errno;
-        std::fprintf(stderr, "Reopen outcome: reopened=%d threw=%d errno=%d\n", reopened, threw, openError);
+        std::fprintf(stderr, "Reopen outcome: reopened=%d threw=%d errno=%d; native reopened=%d errno=%d\n",
+                     reopened, threw, openError, nativeReopened, nativeError);
         errno = savedError;
     }
-    Require(!threw && !reopened && openError == ENOENT, "the real Reopen backend failure was replaced");
+    Require(!threw && reopened == nativeReopened && openError == nativeError, "the real Reopen outcome differs from native freopen");
     HostWrite(2, failures);
     return failures.empty() ? 0 : 1;
 }
@@ -244,7 +295,9 @@ int main(int argc, char** argv) {
     const auto stamp = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 #ifndef _WIN32
     if (argc > 1 && std::string(argv[1]) == "keep-failure") return KeepFailure(stamp);
-    if (argc > 1 && std::string(argv[1]) == "keep-return-failure") return KeepReturnFailure(stamp);
+    if (argc > 2 && std::string(argv[1]) == "native-closed-stdout") return NativeClosedStdout(stamp, argv[2]);
+    if (argc > 2 && std::string(argv[1]) == "keep-return-failure") return KeepReturnFailure(argv[2]);
+    if (argc > 1 && (std::string(argv[1]) == "native-closed-stdout" || std::string(argv[1]) == "keep-return-failure")) return 2;
 #else
     if (argc > 1 && std::string(argv[1]) == "keep-return-stdout") return KeepReturnFailure(1, stamp);
     if (argc > 1 && std::string(argv[1]) == "keep-return-stderr") return KeepReturnFailure(2, stamp);
