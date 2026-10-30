@@ -272,8 +272,9 @@ public:
         if (std::exchange(directory, false)) ForgetDirectoryStream_nid_no_patch(replaced);
         auto* const standard = HostStandardHandle_nid_no_patch(replaced);
         GuestFileLockForget_nid_no_patch(replaced);
-        if (IsHostStandard() && replaced == 1) KeepHostStandardOutput_nid_no_patch();
-        if (IsHostStandard() && replaced == 2) KeepHostStandardError_nid_no_patch();
+        const int error = errno;
+        if (IsHostStandard() && replaced == 1 && KeepHostStandardOutput_nid_no_patch() < 0) errno = error;
+        if (IsHostStandard() && replaced == 2 && KeepHostStandardError_nid_no_patch() < 0) errno = error;
         if (open && !filename.empty()) {
             if (!IsHostStandard()) {
                 StoreHandleAtomic_nid_no_patch(nullptr);
@@ -329,9 +330,9 @@ public:
         const int error = errno;
         try {
 #ifndef __EMSCRIPTEN__
-            if (::fileno(previous) == 1) KeepHostStandardOutput_nid_no_patch();
+            if (::fileno(previous) == 1 && KeepHostStandardOutput_nid_no_patch() < 0) errno = error;
 #endif
-            if (::fileno(previous) == 2) KeepHostStandardError_nid_no_patch();
+            if (::fileno(previous) == 2 && KeepHostStandardError_nid_no_patch() < 0) errno = error;
         } catch (const std::system_error&) {
             errno = error;
         }
