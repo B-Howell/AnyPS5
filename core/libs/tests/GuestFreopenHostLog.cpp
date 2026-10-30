@@ -229,6 +229,11 @@ static int KeepReturnFailure(const std::string& stamp) {
     Require(HostClose(saved) == 0, "cannot close the saved child descriptor");
     Require(kept < 0 && keepError == EBADF, "the real keep did not return EBADF");
     Require(stdout == original, "a failed keep replaced host stdout");
+    if (threw || reopened || openError != ENOENT) {
+        const int savedError = errno;
+        std::fprintf(stderr, "Reopen outcome: reopened=%d threw=%d errno=%d\n", reopened, threw, openError);
+        errno = savedError;
+    }
     Require(!threw && !reopened && openError == ENOENT, "the real Reopen backend failure was replaced");
     HostWrite(2, failures);
     return failures.empty() ? 0 : 1;
