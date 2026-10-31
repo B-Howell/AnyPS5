@@ -1,4 +1,5 @@
 #include "prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DccMetadata.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "Recompiler.hpp"
@@ -16,6 +17,7 @@
 
 namespace {
 
+using AgcDriver::Graphics::DccKeys;
 using AgcDriver::Graphics::Require;
 using ShaderRecompiler::ShaderStage;
 
@@ -35,6 +37,9 @@ constexpr std::size_t TexelAlignment = 65536;
 std::array<std::uint8_t, TexelBytes + TexelAlignment - 1> TexelStorage{};
 const std::span<std::uint8_t, TexelBytes> Texels{reinterpret_cast<std::uint8_t*>((reinterpret_cast<std::uintptr_t>(TexelStorage.data()) + TexelAlignment - 1) & ~(TexelAlignment - 1)), TexelBytes};
 
+constexpr std::size_t ClearKeyBytes = TexelBytes / 256u;
+alignas(256) std::array<std::uint8_t, ClearKeyBytes> ClearKeys{};
+
 alignas(256) constexpr std::array<std::uint32_t, 15> Code{
     0x34020084, 0xe0381000, 0x80000201, 0xbf8c3f70, 0xf09c0f20, 0x00820602, 0xf0001f20, 0x00020a04,
     0x34020085, 0xbf8c3f70, 0xe0781000, 0x80010601, 0xe0781010, 0x80010a01, 0xbf810000,
@@ -45,14 +50,17 @@ std::array<std::uint32_t, 4> BufferDescriptor(const void* data, std::uint32_t by
     return {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>((address >> 32u) & 0xffffu), bytes, 0x31016facu};
 }
 
-std::array<std::uint32_t, 8> TextureDescriptor(std::uint32_t baseArray = BaseArray) {
+std::array<std::uint32_t, 8> TextureDescriptor(std::uint32_t baseArray = BaseArray, bool dccClear = false) {
     const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(Texels.data()));
+    const auto meta = dccClear ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(ClearKeys.data())) >> 8u : 0u;
     return {
         static_cast<std::uint32_t>(address >> 8u),
         static_cast<std::uint32_t>((address >> 40u) & 0xffu) | (Format8888UNorm << 20u) | (((Width - 1u) & 3u) << 30u),
         (Width - 1u) >> 2u,
         0xfacu | (Type1DArray << 28u),
-        LastArray | (baseArray << 16u), 0u, 0u, 0u,
+        LastArray | (baseArray << 16u), 0u,
+        dccClear ? (1u << 20u) | (1u << 21u) | (static_cast<std::uint32_t>(meta & 0xffu) << 24u) : 0u,
+        static_cast<std::uint32_t>(meta >> 8u),
     };
 }
 
@@ -94,12 +102,12 @@ void Expect(std::uint32_t tid, const char* name, const float* actual, const std:
     }
 }
 
-void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray) {
+void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray, bool dccClear = false) {
     Output.fill(-1.0f);
     std::vector<std::uint32_t> userData(20, 0u);
     const auto input = BufferDescriptor(Input.data(), static_cast<std::uint32_t>(sizeof(Input)));
     const auto output = BufferDescriptor(Output.data(), static_cast<std::uint32_t>(sizeof(Output)));
-    const auto texture = TextureDescriptor(baseArray);
+    const auto texture = TextureDescriptor(baseArray, dccClear);
     const auto sampler = SamplerDescriptor();
     std::copy(input.begin(), input.end(), userData.begin());
     std::copy(output.begin(), output.end(), userData.begin() + 4);
@@ -118,12 +126,21 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray) {
     const auto result = ShaderRecompiler::Recompile(request);
     device.Dispatch(result, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
     device.WaitIdle();
+    if (dccClear) {
+        const auto resource = AgcDriver::Graphics::DecodeTextureResource(texture);
+        Require(AgcDriver::Graphics::TextureClearKeys(resource, AgcDriver::Graphics::DescribeSurface(resource).guestBytes) == DccKeys::Clear0000, "the 1D array fixture does not expose a DCC zero clear");
+    }
     for (std::uint32_t tid = 0; tid < Threads; ++tid) {
         const float u = std::bit_cast<float>(Input[tid * 4u + 0u]);
         const float layer = std::clamp(std::nearbyint(std::bit_cast<float>(Input[tid * 4u + 1u])), 0.0f, static_cast<float>(LastArray - baseArray));
         const auto x = static_cast<std::uint32_t>(std::clamp(static_cast<int>(std::floor(u * static_cast<float>(Width))), 0, static_cast<int>(Width) - 1));
-        Expect(tid, "image_sample_lz on a window of a 1D array past maxImageArrayLayers", &Output[tid * 8u], Texel(x, baseArray + static_cast<std::uint32_t>(layer)));
-        Expect(tid, "image_load on a window of a 1D array past maxImageArrayLayers", &Output[tid * 8u + 4u], Texel(Input[tid * 4u + 2u], baseArray + Input[tid * 4u + 3u]));
+        if (dccClear) {
+            Expect(tid, "image_sample_lz of a DCC-cleared row window", &Output[tid * 8u], {0, 0, 0, 0});
+            Expect(tid, "image_load of a DCC-cleared row window", &Output[tid * 8u + 4u], {0, 0, 0, 0});
+        } else {
+            Expect(tid, "image_sample_lz on a window of a 1D array past maxImageArrayLayers", &Output[tid * 8u], Texel(x, baseArray + static_cast<std::uint32_t>(layer)));
+            Expect(tid, "image_load on a window of a 1D array past maxImageArrayLayers", &Output[tid * 8u + 4u], Texel(Input[tid * 4u + 2u], baseArray + Input[tid * 4u + 3u]));
+        }
     }
 }
 
@@ -137,6 +154,7 @@ int main() {
         FillTexels();
         FillInput();
         Run(*device);
+        Run(*device, BaseArray, true);
         try {
             Run(*device, 0);
         } catch (const std::exception& error) {
