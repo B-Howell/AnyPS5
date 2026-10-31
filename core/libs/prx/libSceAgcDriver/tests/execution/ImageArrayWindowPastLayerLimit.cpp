@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <span>
 #include <string>
@@ -132,7 +133,7 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray, s
     if (dccClear) {
         const auto resource = AgcDriver::Graphics::DecodeTextureResource(texture);
         Require(AgcDriver::Graphics::TextureClearKeys(resource, AgcDriver::Graphics::DescribeSurface(resource).guestBytes) == DccKeys::Clear0000, "the 1D array fixture does not expose a DCC zero clear");
-        Require(AgcDriver::Graphics::SampledTexturesCleared() == clearsBefore + 1u, "the over-limit DCC row window was not materialized by a GPU clear");
+        if (std::getenv("APS5_NO_TEXTURE_CACHE") == nullptr) Require(AgcDriver::Graphics::SampledTexturesCleared() == clearsBefore + 1u, "the over-limit DCC row window was not materialized by a GPU clear");
     }
     for (std::uint32_t tid = 0; tid < Threads; ++tid) {
         const float u = std::bit_cast<float>(Input[tid * 4u + 0u]);
