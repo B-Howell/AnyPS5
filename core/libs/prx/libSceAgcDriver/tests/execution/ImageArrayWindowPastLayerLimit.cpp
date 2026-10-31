@@ -158,9 +158,13 @@ int main() {
         FillTexels();
         FillInput();
         Run(*device);
-        const auto limit = device->graphicsContext().limits.maxImageArrayLayers;
+        const auto& limits = device->graphicsContext().limits;
+        const auto limit = limits.maxImageArrayLayers;
         Require(limit != 0u, "the device reports no maxImageArrayLayers");
-        if (limit >= MaxGuestLayers) return VulkanTestSkipped;
+        if (limit >= MaxGuestLayers || limit + 1u > limits.maxImageDimension2D / 2u) return VulkanTestSkipped;
+        const auto clearResource = AgcDriver::Graphics::DecodeTextureResource(TextureDescriptor(1u, limit + 1u, true));
+        const auto clearBytes = AgcDriver::Graphics::DescribeSurface(clearResource).guestBytes;
+        Require(clearBytes <= Texels.size() && AgcDriver::Graphics::DccKeyBytes(clearBytes) <= ClearKeys.size(), "the over-limit clear fixture exceeds its guest texel or DCC-key storage");
         Run(*device, 1u, limit + 1u, true);
         try {
             Run(*device, 0);
