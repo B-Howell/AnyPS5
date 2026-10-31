@@ -1,5 +1,6 @@
 #include "prx/libSceAgcDriver/Execution/include/VulkanDevice.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DccMetadata.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "Recompiler.hpp"
@@ -26,6 +27,7 @@ constexpr std::uint32_t Width = 8;
 constexpr std::uint32_t Layers = 3;
 constexpr std::uint32_t BaseArray = 8100;
 constexpr std::uint32_t LastArray = BaseArray + Layers - 1u;
+constexpr std::uint32_t MaxGuestLayers = 8192;
 constexpr std::uint32_t Format8888UNorm = 56;
 constexpr std::uint32_t Type1DArray = 12;
 constexpr std::uint32_t ClampEdge = 2;
@@ -50,7 +52,7 @@ std::array<std::uint32_t, 4> BufferDescriptor(const void* data, std::uint32_t by
     return {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>((address >> 32u) & 0xffffu), bytes, 0x31016facu};
 }
 
-std::array<std::uint32_t, 8> TextureDescriptor(std::uint32_t baseArray = BaseArray, bool dccClear = false) {
+std::array<std::uint32_t, 8> TextureDescriptor(std::uint32_t baseArray = BaseArray, std::uint32_t lastArray = LastArray, bool dccClear = false) {
     const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(Texels.data()));
     const auto meta = dccClear ? static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(ClearKeys.data())) >> 8u : 0u;
     return {
@@ -58,7 +60,7 @@ std::array<std::uint32_t, 8> TextureDescriptor(std::uint32_t baseArray = BaseArr
         static_cast<std::uint32_t>((address >> 40u) & 0xffu) | (Format8888UNorm << 20u) | (((Width - 1u) & 3u) << 30u),
         (Width - 1u) >> 2u,
         0xfacu | (Type1DArray << 28u),
-        LastArray | (baseArray << 16u), 0u,
+        lastArray | (baseArray << 16u), 0u,
         dccClear ? (1u << 20u) | (1u << 21u) | (static_cast<std::uint32_t>(meta & 0xffu) << 24u) : 0u,
         static_cast<std::uint32_t>(meta >> 8u),
     };
@@ -102,12 +104,12 @@ void Expect(std::uint32_t tid, const char* name, const float* actual, const std:
     }
 }
 
-void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray, bool dccClear = false) {
+void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray, std::uint32_t lastArray = LastArray, bool dccClear = false) {
     Output.fill(-1.0f);
     std::vector<std::uint32_t> userData(20, 0u);
     const auto input = BufferDescriptor(Input.data(), static_cast<std::uint32_t>(sizeof(Input)));
     const auto output = BufferDescriptor(Output.data(), static_cast<std::uint32_t>(sizeof(Output)));
-    const auto texture = TextureDescriptor(baseArray, dccClear);
+    const auto texture = TextureDescriptor(baseArray, lastArray, dccClear);
     const auto sampler = SamplerDescriptor();
     std::copy(input.begin(), input.end(), userData.begin());
     std::copy(output.begin(), output.end(), userData.begin() + 4);
@@ -124,15 +126,17 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray, b
     };
     request.useCache = false;
     const auto result = ShaderRecompiler::Recompile(request);
+    const auto clearsBefore = AgcDriver::Graphics::SampledTexturesCleared();
     device.Dispatch(result, 1, 1, 1, {}, reinterpret_cast<std::uintptr_t>(code.data()));
     device.WaitIdle();
     if (dccClear) {
         const auto resource = AgcDriver::Graphics::DecodeTextureResource(texture);
         Require(AgcDriver::Graphics::TextureClearKeys(resource, AgcDriver::Graphics::DescribeSurface(resource).guestBytes) == DccKeys::Clear0000, "the 1D array fixture does not expose a DCC zero clear");
+        Require(AgcDriver::Graphics::SampledTexturesCleared() == clearsBefore + 1u, "the over-limit DCC row window was not materialized by a GPU clear");
     }
     for (std::uint32_t tid = 0; tid < Threads; ++tid) {
         const float u = std::bit_cast<float>(Input[tid * 4u + 0u]);
-        const float layer = std::clamp(std::nearbyint(std::bit_cast<float>(Input[tid * 4u + 1u])), 0.0f, static_cast<float>(LastArray - baseArray));
+        const float layer = std::clamp(std::nearbyint(std::bit_cast<float>(Input[tid * 4u + 1u])), 0.0f, static_cast<float>(lastArray - baseArray));
         const auto x = static_cast<std::uint32_t>(std::clamp(static_cast<int>(std::floor(u * static_cast<float>(Width))), 0, static_cast<int>(Width) - 1));
         if (dccClear) {
             Expect(tid, "image_sample_lz of a DCC-cleared row window", &Output[tid * 8u], {0, 0, 0, 0});
@@ -154,7 +158,10 @@ int main() {
         FillTexels();
         FillInput();
         Run(*device);
-        Run(*device, BaseArray, true);
+        const auto limit = device->graphicsContext().limits.maxImageArrayLayers;
+        Require(limit != 0u, "the device reports no maxImageArrayLayers");
+        if (limit >= MaxGuestLayers) return VulkanTestSkipped;
+        Run(*device, 1u, limit + 1u, true);
         try {
             Run(*device, 0);
         } catch (const std::exception& error) {
