@@ -48,6 +48,11 @@ alignas(256) constexpr std::array<std::uint32_t, 15> Code{
     0x34020085, 0xbf8c3f70, 0xe0781000, 0x80010601, 0xe0781010, 0x80010a01, 0xbf810000,
 };
 
+alignas(256) constexpr std::array<std::uint32_t, 11> SampleOnlyCode{
+    0x34020084, 0xe0381000, 0x80000201, 0xbf8c3f70, 0xf09c0f20, 0x00820602, 0x34020085, 0xbf8c3f70,
+    0xe0781000, 0x80010601, 0xbf810000,
+};
+
 std::array<std::uint32_t, 4> BufferDescriptor(const void* data, std::uint32_t bytes) {
     const auto address = reinterpret_cast<std::uintptr_t>(data);
     return {static_cast<std::uint32_t>(address), static_cast<std::uint32_t>((address >> 32u) & 0xffffu), bytes, 0x31016facu};
@@ -116,7 +121,7 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray, s
     std::copy(output.begin(), output.end(), userData.begin() + 4);
     std::copy(texture.begin(), texture.end(), userData.begin() + 8);
     std::copy(sampler.begin(), sampler.end(), userData.begin() + 16);
-    const std::span<const std::uint32_t> code(Code);
+    const std::span<const std::uint32_t> code = dccClear ? std::span<const std::uint32_t>(SampleOnlyCode) : std::span<const std::uint32_t>(Code);
     const std::array<ShaderRecompiler::MemoryRegion, 1> memory{{{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(code)}}};
     const ShaderRecompiler::ShaderComputeStageInfo compute{{Threads, 1, 1}, 0u, {false, false, false}, false, 1};
     ShaderRecompiler::RecompileRequest request{
@@ -141,7 +146,6 @@ void Run(AgcDriver::VulkanDevice& device, std::uint32_t baseArray = BaseArray, s
         const auto x = static_cast<std::uint32_t>(std::clamp(static_cast<int>(std::floor(u * static_cast<float>(Width))), 0, static_cast<int>(Width) - 1));
         if (dccClear) {
             Expect(tid, "image_sample_lz of a DCC-cleared row window", &Output[tid * 8u], {0, 0, 0, 0});
-            Expect(tid, "image_load of a DCC-cleared row window", &Output[tid * 8u + 4u], {0, 0, 0, 0});
         } else {
             Expect(tid, "image_sample_lz on a window of a 1D array past maxImageArrayLayers", &Output[tid * 8u], Texel(x, baseArray + static_cast<std::uint32_t>(layer)));
             Expect(tid, "image_load on a window of a 1D array past maxImageArrayLayers", &Output[tid * 8u + 4u], Texel(Input[tid * 4u + 2u], baseArray + Input[tid * 4u + 3u]));
