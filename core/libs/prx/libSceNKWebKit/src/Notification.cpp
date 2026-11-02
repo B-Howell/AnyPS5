@@ -15,7 +15,7 @@ const void* APS5_VABI WKNotificationCopyBody(const void* notificationRef) {
 
 const void* APS5_VABI WKNotificationCopyIconURL(const void* notificationRef) {
     const auto* notification = NKWebKit::Cast<NKWebKit::Notification>(notificationRef, __func__);
-    return NKWebKit::ToRef(NKWebKit::Make<NKWebKit::URL>(notification->iconURL));
+    return NKWebKit::ToRef(NKWebKit::Make<NKWebKit::String>(notification->iconURL));
 }
 
 const void* APS5_VABI WKNotificationCopyTag(const void* notificationRef) {

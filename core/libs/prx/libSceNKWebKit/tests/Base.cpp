@@ -352,12 +352,12 @@ static void TestError() {
 }
 
 static void TestNotification() {
-    Require(WKNotificationGetTypeID() == 89);
+    Require(WKNotificationGetTypeID() == 76);
 
     auto notif = NKWebKit::Make<NKWebKit::Notification>();
     notif->title = u"Alert";
     notif->body = u"Something happened";
-    notif->iconURL = "https://example.com/icon.png";
+    notif->iconURL = u"https://example.com/icon.png";
     notif->tag = u"tag1";
     notif->lang = u"en-US";
     notif->dir = u"ltr";
@@ -374,7 +374,8 @@ static void TestNotification() {
     WKRelease(body);
 
     auto* icon = WKNotificationCopyIconURL(ref);
-    Require(icon != nullptr);
+    Require(WKGetTypeID(icon) == 21);
+    Require(WKStringIsEqualToUTF8CString(icon, "https://example.com/icon.png"));
     WKRelease(icon);
 
     auto* tag = WKNotificationCopyTag(ref);
