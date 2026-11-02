@@ -266,6 +266,8 @@ struct LibreSslEvpCipherCtx {
     int finalUsed;
     int blockMask;
     unsigned char final[32];
+};
+
 struct LibreSslX509NameEntry {
     void* object;
     void* value;
