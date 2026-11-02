@@ -101,4 +101,12 @@ public:
     bool valid = false;
 };
 
+class PopupMenuItem final : public ObjectOf<ObjectType::PopupMenuItem> {
+public:
+    Retained<String> text;
+    bool enabled = true;
+    bool isItem = true;
+    bool isSeparator = false;
+};
+
 }  // namespace NKWebKit
