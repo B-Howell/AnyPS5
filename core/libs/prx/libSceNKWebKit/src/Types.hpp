@@ -101,4 +101,15 @@ public:
     bool valid = false;
 };
 
+class Notification final : public ObjectOf<ObjectType::Notification> {
+public:
+    std::u16string title;
+    std::u16string body;
+    std::string iconURL;
+    std::u16string tag;
+    std::u16string lang;
+    std::u16string dir;
+    std::uint64_t notificationID = 0;
+};
+
 }  // namespace NKWebKit
