@@ -101,4 +101,12 @@ public:
     bool valid = false;
 };
 
+class AccessibilityObject final : public ObjectOf<ObjectType::AccessibilityObject> {
+public:
+    Retained<String> title;
+    Retained<String> description;
+    Retained<String> helpText;
+    Retained<String> url;
+};
+
 }  // namespace NKWebKit
