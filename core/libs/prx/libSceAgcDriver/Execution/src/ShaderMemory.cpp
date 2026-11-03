@@ -80,6 +80,14 @@ std::uint64_t imageViewGeneration(void*) {
     return GuestAllocations::GuestAllocationsGeneration_nid_postfix();
 }
 
+bool imageViewCurrent(void*, const ShaderRecompiler::SrtImageViewIdentity& identity) {
+    const auto range = GuestAllocations::GuestAllocationsLookup_nid_postfix(static_cast<std::uintptr_t>(identity.address), false);
+    if (range == nullptr) return !identity.hasRange;
+    return identity.hasRange && identity.readable == range->readable && identity.writable == range->writable && identity.gpu == range->gpu && identity.rangeAddress == range->address &&
+           identity.rangeBytes == range->bytes && identity.allocationAddress == range->allocationAddress && identity.allocationBytes == range->allocationBytes &&
+           identity.backingSerial == range->backingSerial;
+}
+
 bool normalizeImageView(void*, std::uint32_t maxArrayLayers, std::array<std::uint32_t, 8>& descriptor, ShaderRecompiler::SrtImageViewIdentity& identity) {
     identity.generation = GuestAllocations::GuestAllocationsGeneration_nid_postfix();
     if (((descriptor[3] >> 28u) & 0xfu) != 12u) return false;
@@ -321,6 +329,11 @@ ShaderMemory::Page& ShaderMemory::page(std::uint64_t base) {
     }
     auto& page = addPage(position, base);
     if (CaptureProfiled()) ++CaptureTotals().pages;
+    const auto range = GuestAllocations::GuestAllocationsLookup_nid_postfix(static_cast<std::uintptr_t>(base), false);
+    page.hasRange = range != nullptr;
+    page.rangeAddress = range != nullptr ? range->address : 0u;
+    page.rangeBytes = range != nullptr ? range->bytes : 0u;
+    page.backingSerial = range != nullptr ? range->backingSerial : 0u;
     // A page is either mapped whole or read word by word where the guest mapped less than a page,
     // or where recorded GPU work writes into it (a whole-page read would wait for that work).
     if (GuestMemory::Accessible(reinterpret_cast<const void*>(base), PageBytes)) {
@@ -584,6 +597,26 @@ std::uint64_t ShaderMemory::descriptorScope(void* context, std::size_t bytes) {
     return self.rawInvalidations;
 }
 
+bool ShaderMemory::sourcesCurrent(void* context) {
+    auto& self = *static_cast<ShaderMemory*>(context);
+    bool current = true;
+    std::erase_if(self.pages, [&](const std::pair<std::uint64_t, Page*>& entry) {
+        const auto& [base, page] = entry;
+        const auto range = GuestAllocations::GuestAllocationsLookup_nid_postfix(static_cast<std::uintptr_t>(base), false);
+        if (page->hasRange == (range != nullptr) && (range == nullptr || (range->address == page->rangeAddress && range->bytes == page->rangeBytes && range->backingSerial == page->backingSerial))) return false;
+        current = false;
+        auto& pool = pagePool<Page>();
+        if (pool.size() < PagePoolLimit) pool.emplace_back(page);
+        else delete page;
+        return true;
+    });
+    if (!current) {
+        self.lastBase = ~std::uint64_t{0};
+        self.lastPage = nullptr;
+    }
+    return current;
+}
+
 bool ShaderMemory::accessible(void* context, std::uint64_t address, std::uint64_t bytes) {
     auto& self = *static_cast<ShaderMemory*>(context);
     if (bytes == 0 || address > std::numeric_limits<std::uint64_t>::max() - bytes) return false;
@@ -835,6 +868,8 @@ std::shared_ptr<const ShaderRecompiler::ResourceCapture> ShaderMemory::capture(c
     runtime.descriptorScope = &descriptorScope;
     runtime.normalizeImageView = &normalizeImageView;
     runtime.imageViewGeneration = &imageViewGeneration;
+    runtime.imageViewCurrent = &imageViewCurrent;
+    runtime.sourcesCurrent = &sourcesCurrent;
     auto capture = invocation != nullptr ? invocation->Capture(runtime) : handle != nullptr ? ShaderRecompiler::CaptureResources(request, runtime, *handle) : ShaderRecompiler::CaptureResources(request, runtime);
     if (profile) {
         totals.captureNanoseconds += NanosecondsSince(started);

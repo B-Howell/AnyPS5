@@ -2719,13 +2719,44 @@ void ResourceMaterializer::Materialize(const IrResourcePlan& program, const SrtR
                 TableSnapshotter(plan, runtime, walker, activeSources, nextSnapshot.tables).Run();
                 const auto afterTables = runtime.descriptorScope != nullptr ? runtime.descriptorScope(runtime.userContext, 0u) : 0u;
                 const auto afterImageGeneration = runtime.imageViewGeneration != nullptr ? runtime.imageViewGeneration(runtime.userContext) : 0u;
-                if ((runtime.descriptorScope != nullptr && (afterTables != afterSnapshot || (plan.uniformFill.fill.kind != UniformFillKind::None && afterSnapshot != beforeSnapshot))) || afterImageGeneration != beforeImageGeneration) {
+                const auto viewCurrent = [&](const RegisteredImageView& view) {
+                    SrtImageViewIdentity identity{};
+                    identity.address = view.address;
+                    identity.rangeAddress = view.rangeAddress;
+                    identity.rangeBytes = view.rangeBytes;
+                    identity.allocationAddress = view.allocationAddress;
+                    identity.allocationBytes = view.allocationBytes;
+                    identity.backingSerial = view.backingSerial;
+                    identity.hasRange = view.hasRange;
+                    identity.readable = view.readable;
+                    identity.writable = view.writable;
+                    identity.gpu = view.gpu;
+                    return runtime.imageViewCurrent(runtime.userContext, identity);
+                };
+                auto imageGeneration = afterImageGeneration;
+                const auto imagesMoved = [&] {
+                    if (afterImageGeneration == beforeImageGeneration) return false;
+                    if (runtime.imageViewCurrent == nullptr) return true;
+                    for (std::uint32_t pass = 0; pass < 2u; ++pass) {
+                        const auto passGeneration = runtime.imageViewGeneration(runtime.userContext);
+                        if (runtime.sourcesCurrent != nullptr && !runtime.sourcesCurrent(runtime.userContext)) return true;
+                        const bool current = std::all_of(nextSnapshot.registeredImages.begin(), nextSnapshot.registeredImages.end(), viewCurrent) &&
+                                             std::all_of(nextSnapshot.tables.tables.begin(), nextSnapshot.tables.tables.end(), [&](const auto& table) {
+                                                 return std::all_of(table.resourceViews.begin(), table.resourceViews.end(), [&](const auto& view) { return std::all_of(view.identities.begin(), view.identities.end(), viewCurrent); });
+                                             });
+                        if (runtime.imageViewGeneration(runtime.userContext) != passGeneration) continue;
+                        imageGeneration = passGeneration;
+                        return !current;
+                    }
+                    return true;
+                };
+                if ((runtime.descriptorScope != nullptr && (afterTables != afterSnapshot || (plan.uniformFill.fill.kind != UniformFillKind::None && afterSnapshot != beforeSnapshot))) || imagesMoved()) {
                     continue;
                 }
                 for (const auto& table : nextSnapshot.tables.tables) {
                     for (const auto& view : table.resourceViews) nextSnapshot.registeredImages.insert(nextSnapshot.registeredImages.end(), view.identities.begin(), view.identities.end());
                 }
-                nextSnapshot.imageAllocationGeneration = nextSnapshot.registeredImages.empty() ? 0u : afterImageGeneration;
+                nextSnapshot.imageAllocationGeneration = nextSnapshot.registeredImages.empty() ? 0u : imageGeneration;
                 const auto started = MaterializeProfiled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 materializeForcedDegamma(plan, nextSnapshot);
                 materializeTables(plan, nextSnapshot);

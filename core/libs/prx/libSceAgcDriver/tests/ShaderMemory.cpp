@@ -1467,6 +1467,59 @@ void verifySignedSrtComparison() {
     }
 }
 
+void verifyImageViewChangeDuringRecheck() {
+    using namespace ShaderRecompiler;
+    struct Mappings {
+        std::uint64_t generation = 1;
+        std::uint64_t serial = 1;
+        bool changeOnCheck = true;
+    };
+    static Mappings mappings;
+    mappings = {};
+    constexpr std::uint64_t texels = 0x200000000ull;
+    static std::array<std::uint32_t, 128> input{};
+    static std::array<float, 256> output{};
+    const auto buffer = [](const void* data, std::uint32_t bytes) {
+        const auto address = reinterpret_cast<std::uintptr_t>(data);
+        return std::array<std::uint32_t, 4>{static_cast<std::uint32_t>(address), static_cast<std::uint32_t>((address >> 32u) & 0xffffu), bytes, 0x31016facu};
+    };
+    const std::vector<std::uint32_t> code{0x34020084u, 0xe0381000u, 0x80000201u, 0xbf8c3f70u, 0xf09c0f20u, 0x00820602u, 0x34020085u, 0xbf8c3f70u, 0xe0781000u, 0x80010601u, 0xbf810000u};
+    std::vector<std::uint32_t> userData(20, 0u);
+    const auto load = buffer(input.data(), static_cast<std::uint32_t>(sizeof(input)));
+    const auto store = buffer(output.data(), static_cast<std::uint32_t>(sizeof(output)));
+    const std::array<std::uint32_t, 8> texture{static_cast<std::uint32_t>(texels >> 8u), (56u << 20u) | (3u << 30u), 1u, 0xfacu | (12u << 28u), 3u, 0u, 0u, 0u};
+    const std::array<std::uint32_t, 4> sampler{2u | (2u << 3u) | (2u << 6u), 0u, 0u, 0u};
+    std::copy(load.begin(), load.end(), userData.begin());
+    std::copy(store.begin(), store.end(), userData.begin() + 4);
+    std::copy(texture.begin(), texture.end(), userData.begin() + 8);
+    std::copy(sampler.begin(), sampler.end(), userData.begin() + 16);
+    auto request = FrontendRequest(code, userData);
+    request.context.waveSize = 32;
+    request.context.compute = ShaderComputeStageInfo{{32u, 1u, 1u}, 0u, {false, false, false}, false, 1u};
+    SrtRuntime runtime{};
+    runtime.userData = userData;
+    runtime.shaderBase = request.shader.codeAddress;
+    runtime.normalizeImageView = +[](void*, std::uint32_t, std::array<std::uint32_t, 8>&, SrtImageViewIdentity& identity) {
+        identity = {mappings.generation, texels, texels, 0x10000u, texels, 0x10000u, mappings.serial, true, true, false, true};
+        ++mappings.generation;
+        return true;
+    };
+    runtime.imageViewGeneration = +[](void*) { return mappings.generation; };
+    runtime.imageViewCurrent = +[](void*, const SrtImageViewIdentity& identity) {
+        const bool current = identity.backingSerial == mappings.serial;
+        if (std::exchange(mappings.changeOnCheck, false)) {
+            ++mappings.serial;
+            ++mappings.generation;
+        }
+        return current;
+    };
+    const auto capture = CaptureResources(request, runtime);
+    const auto& views = capture->snapshot.registeredImages;
+    require(!views.empty() && !mappings.changeOnCheck, "image view recheck: the sampled 1D array was not registered and rechecked");
+    require(std::ranges::all_of(views, [](const auto& view) { return view.backingSerial == mappings.serial; }) && capture->snapshot.imageAllocationGeneration == mappings.generation,
+            "image view recheck: a snapshot kept a view whose mapping changed while the views were rechecked");
+}
+
 void verifyTypeZeroImageMaterialization() {
     using namespace ShaderRecompiler;
     for (const std::uint32_t type : {0u, 1u, 2u}) {
@@ -2084,6 +2137,66 @@ void verifyTypeZeroImageMaterialization() {
         require(afterForcedRead == firstEnter && secondEnter == firstEnter && firstExit == firstEnter && secondExit == firstEnter,
                 "nested SrtDescriptorForceSync: nested 1->2 transition or scope exit altered rawInvalidations");
     }
+
+    {
+        srt.fill(0u);
+        std::copy(oldT.begin(), oldT.end(), srt.begin());
+        std::copy(outputV.begin(), outputV.end(), srt.begin() + 16u);
+        srt[20] = 1u;
+        phase = 0u;
+        static std::array<std::byte, 64> unrelatedStorage{};
+        static std::uint32_t unrelatedMappings = 0;
+        unrelatedMappings = 0;
+        const auto churningPending = +[](std::uint64_t address, std::size_t bytes, std::span<std::byte>) -> AgcDriver::ShaderMemory::PendingWrite {
+            using Pending = AgcDriver::ShaderMemory::PendingWrite;
+            GuestAllocations::Mutation().Add(unrelatedStorage.data(), unrelatedStorage.size(), true, false, false);
+            GuestAllocations::Mutation().Remove(unrelatedStorage.data());
+            ++unrelatedMappings;
+            if (bytes >= 4096u) return address <= srtAddress && srtAddress < address + bytes ? Pending::Sync : Pending::None;
+            return Pending::Raw;
+        };
+        AgcDriver::ShaderMemory churningMemory({}, churningPending, nullptr, hookWaits);
+        const auto churnedCapture = churningMemory.Capture(request);
+        require(unrelatedMappings != 0u && std::ranges::any_of(churnedCapture->snapshot.images, [&](const DescriptorValue& value) {
+            return std::equal(oldT.begin(), oldT.end(), value.dwords.begin());
+        }), "unrelated guest mappings: a snapshot whose captured image views were untouched did not stabilize");
+    }
+    {
+        srt.fill(0u);
+        std::copy(oldT.begin(), oldT.end(), srt.begin());
+        std::copy(outputV.begin(), outputV.end(), srt.begin() + 16u);
+        srt[20] = 1u;
+        phase = 0u;
+        static std::array<std::uint32_t, 8> remappedT{};
+        static std::uint32_t descriptorWordsRead = 0;
+        static bool remapped = false;
+        remappedT = newT;
+        descriptorWordsRead = 0;
+        remapped = false;
+        GuestAllocations::Mutation().Add(srt.data(), sizeof(srt), true, false, false);
+        const auto remappingPending = +[](std::uint64_t address, std::size_t bytes, std::span<std::byte>) -> AgcDriver::ShaderMemory::PendingWrite {
+            using Pending = AgcDriver::ShaderMemory::PendingWrite;
+            if (bytes >= 4096u) return address <= srtAddress && srtAddress < address + bytes ? Pending::Sync : Pending::None;
+            if (!remapped && bytes == sizeof(std::uint32_t) && address >= srtAddress && address < srtAddress + 32u) {
+                descriptorWordsRead |= 1u << ((address - srtAddress) / sizeof(std::uint32_t));
+            } else if (!remapped && descriptorWordsRead == 0xffu && address >= srtAddress + 32u) {
+                std::memcpy(srt.data(), remappedT.data(), sizeof(remappedT));
+                GuestAllocations::Mutation().Remove(srt.data());
+                GuestAllocations::Mutation().Add(srt.data(), sizeof(srt), true, false, false);
+                remapped = true;
+            }
+            return Pending::Raw;
+        };
+        AgcDriver::ShaderMemory remappingMemory({}, remappingPending, nullptr, hookWaits);
+        const auto remappedCapture = remappingMemory.Capture(request);
+        GuestAllocations::Mutation().Remove(srt.data());
+        require(remapped, "descriptor backing: the SRT was not remapped after its T# was read");
+        const auto holds = [&](const std::array<std::uint32_t, 8>& descriptor) {
+            return std::ranges::any_of(remappedCapture->snapshot.images, [&](const DescriptorValue& value) { return std::equal(descriptor.begin(), descriptor.end(), value.dwords.begin()); });
+        };
+        require(holds(newT) && !holds(oldT), "descriptor backing: a capture kept descriptor words read before their memory was remapped");
+    }
+    verifyImageViewChangeDuringRecheck();
 
     {
         srt.fill(0u);
