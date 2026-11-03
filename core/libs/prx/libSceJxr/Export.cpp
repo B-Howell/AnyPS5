@@ -10,6 +10,7 @@
 
 namespace {
 constexpr std::int64_t WmpErrSuccess = 0;
+constexpr std::int64_t WmpErrNotYetImplemented = -2;
 }
 
 extern "C" {
@@ -216,36 +217,63 @@ int APS5_VABI PKImageDecode_Create_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
-int APS5_VABI PKImageDecode_GetColorContext_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_GetColorContext_nid_postfix(Jxr::ImageDecode* decoder, std::uint8_t*, std::uint32_t*) {
+    if (!decoder) APS5_INVALID_ARG_EX;
+    return WmpErrNotYetImplemented;
 }
 
-int APS5_VABI PKImageDecode_GetDescriptiveMetadata_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_GetDescriptiveMetadata_nid_postfix(Jxr::ImageDecode* decoder, void*) {
+    if (!decoder) APS5_INVALID_ARG_EX;
+    return WmpErrNotYetImplemented;
 }
 
-int APS5_VABI PKImageDecode_GetFrameCount_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_GetFrameCount_nid_postfix(Jxr::ImageDecode* decoder, std::uint32_t* count) {
+    if (!decoder || !count) APS5_INVALID_ARG_EX;
+    *count = decoder->frameCount;
+    return WmpErrSuccess;
 }
 
-int APS5_VABI PKImageDecode_GetPixelFormat_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_GetPixelFormat_nid_postfix(Jxr::ImageDecode* decoder, JxrGuestGuid* pixelFormat) {
+    if (!decoder || !pixelFormat) APS5_INVALID_ARG_EX;
+    *pixelFormat = decoder->pixelFormat;
+    return WmpErrSuccess;
 }
 
-int APS5_VABI PKImageDecode_GetResolution_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_GetResolution_nid_postfix(Jxr::ImageDecode* decoder, float* resolutionX, float* resolutionY) {
+    if (!decoder || !resolutionX || !resolutionY) APS5_INVALID_ARG_EX;
+    *resolutionX = decoder->resolutionX;
+    *resolutionY = decoder->resolutionY;
+    return WmpErrSuccess;
 }
 
-int APS5_VABI PKImageDecode_GetSize_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_GetSize_nid_postfix(Jxr::ImageDecode* decoder, std::int32_t* width, std::int32_t* height) {
+    if (!decoder || !width || !height) APS5_INVALID_ARG_EX;
+    *width = static_cast<std::int32_t>(decoder->width);
+    *height = static_cast<std::int32_t>(decoder->height);
+    return WmpErrSuccess;
 }
 
-int APS5_VABI PKImageDecode_Initialize_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_Initialize_nid_postfix(Jxr::ImageDecode* decoder, Jxr::Stream* stream) {
+    if (!decoder || !stream || !stream->getPosition) APS5_INVALID_ARG_EX;
+    decoder->stream = stream;
+    decoder->resolutionX = 96.0f;
+    decoder->resolutionY = 96.0f;
+    decoder->frameCount = 1;
+    decoder->pixelFormat = JxrGuest_GUID_PKPixelFormatDontCare_nid_no_patch;
+    stream->getPosition(stream, &decoder->startOffset);
+    std::memset(decoder->misc.data(), 0, decoder->misc.size());
+    return WmpErrSuccess;
 }
 
-int APS5_VABI PKImageDecode_Release_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageDecode_Release_nid_postfix(Jxr::ImageDecode** decoder) {
+    if (!decoder) return WmpErrSuccess;
+    if (auto* instance = *decoder) {
+        if (instance->streamOwner && instance->stream && instance->stream->close) {
+            instance->stream->close(&instance->stream);
+        }
+        return PKFree_nid_postfix(reinterpret_cast<void**>(decoder));
+    }
+    return WmpErrSuccess;
 }
 
 int APS5_VABI PKImageDecode_SelectFrame_nid_postfix() {
