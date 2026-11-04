@@ -340,6 +340,8 @@ struct LibreSslEvpCipher {
     void* getAsn1Parameters;
     void* control;
     void* applicationData;
+};
+
 struct LibreSslX509NameEntry {
     void* object;
     void* value;
