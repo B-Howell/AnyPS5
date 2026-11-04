@@ -520,19 +520,7 @@ int APS5_VABI initMRPtr_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
-int APS5_VABI initPostProc_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
 int APS5_VABI peekBit16_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
-int APS5_VABI postProcBlock_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
-int APS5_VABI postProcMB_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
@@ -560,19 +548,7 @@ int APS5_VABI setUniformQuantizer_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
-int APS5_VABI slideOneMBRow_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
 int APS5_VABI swapMRPtr_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
-int APS5_VABI termPostProc_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
-}
-
-int APS5_VABI updatePostProcInfo_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 

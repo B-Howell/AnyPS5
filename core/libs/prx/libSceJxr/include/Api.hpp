@@ -2,6 +2,7 @@
 
 #include "SceTypes.hpp"
 #include "prx/libSceJxr/GuestPixelInfo.h"
+#include "prx/libSceJxr/GuestPostProcInfo.h"
 #include "prx/libSceJxr/Stream.hpp"
 
 extern "C" {
@@ -10,6 +11,18 @@ std::int64_t APS5_VABI PKFree_nid_postfix(void** memory);
 std::int64_t APS5_VABI PixelFormatLookup_nid_postfix(JxrPixelInfo* value, std::uint8_t mode);
 std::int64_t APS5_VABI readIS_nid_postfix(void* codec, Jxr::BitIo* io);
 std::int64_t APS5_VABI writeIS_nid_postfix(void* codec, Jxr::BitIo* io);
+
+using JxrPostProcRows = JxrPostProcInfo* (*)[2];
+std::int32_t APS5_VABI initPostProc_nid_postfix(JxrPostProcRows rows, std::size_t mbWidth, std::size_t channels);
+void APS5_VABI termPostProc_nid_postfix(JxrPostProcRows rows, std::size_t channels);
+void APS5_VABI slideOneMBRow_nid_postfix(JxrPostProcRows rows, std::size_t channels, std::size_t mbWidth, int top,
+                                         int bottom);
+void APS5_VABI updatePostProcInfo_nid_postfix(JxrPostProcRows rows, std::int32_t* mb, std::size_t mbX,
+                                              std::size_t channel);
+void APS5_VABI postProcMB_nid_postfix(JxrPostProcRows rows, std::int32_t* p0, std::int32_t* p1, std::size_t mbX,
+                                      std::size_t channel, int threshold);
+void APS5_VABI postProcBlock_nid_postfix(JxrPostProcRows rows, std::int32_t* p0, std::int32_t* p1, std::size_t mbX,
+                                         std::size_t channel, int threshold);
 
 int APS5_VABI AllocateCodingContextDec_nid_postfix();
 int APS5_VABI CloseWS_List_nid_postfix();
@@ -126,20 +139,14 @@ int APS5_VABI getSizeRead_nid_postfix();
 int APS5_VABI getSizeWrite_nid_postfix();
 int APS5_VABI getTilePos_nid_postfix();
 int APS5_VABI initMRPtr_nid_postfix();
-int APS5_VABI initPostProc_nid_postfix();
 int APS5_VABI peekBit16_nid_postfix();
-int APS5_VABI postProcBlock_nid_postfix();
-int APS5_VABI postProcMB_nid_postfix();
 int APS5_VABI putBit16_nid_postfix();
 int APS5_VABI putBit16z_nid_postfix();
 int APS5_VABI putBit32_nid_postfix();
 int APS5_VABI remapQP_nid_postfix();
 int APS5_VABI setBitIOPointers_nid_postfix();
 int APS5_VABI setUniformQuantizer_nid_postfix();
-int APS5_VABI slideOneMBRow_nid_postfix();
 int APS5_VABI swapMRPtr_nid_postfix();
-int APS5_VABI termPostProc_nid_postfix();
-int APS5_VABI updatePostProcInfo_nid_postfix();
 int APS5_VABI updatePredInfo_nid_postfix();
 int APS5_VABI useDCQuantizer_nid_postfix();
 int APS5_VABI useLPQuantizer_nid_postfix();
