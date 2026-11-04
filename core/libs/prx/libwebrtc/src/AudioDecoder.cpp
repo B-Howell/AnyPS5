@@ -44,8 +44,34 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+
+namespace {
+
+int DecodeChecked(WebRtcAudioDecoder* decoder, std::size_t durationSlot, std::size_t decodeSlot, const std::uint8_t* encoded, std::size_t encodedLen, int sampleRateHz,
+    std::size_t maxDecodedBytes, std::int16_t* decoded, WebRtcSpeechType* speechType) {
+    if (!decoder)
+        throw std::invalid_argument("AudioDecoder::Decode requires a decoder");
+    int duration = WebRtcVirtualSlot<WebRtcAudioDecoderPacketDuration>(decoder, durationSlot)(decoder, encoded, encodedLen);
+    if (duration >= 0 && duration * WebRtcVirtualSlot<WebRtcAudioDecoderChannels>(decoder, WebRtcAudioDecoderChannelsSlot)(decoder) * sizeof(std::int16_t) > maxDecodedBytes)
+        return -1;
+    return WebRtcVirtualSlot<WebRtcAudioDecoderDecodeInternal>(decoder, decodeSlot)(decoder, encoded, encodedLen, sampleRateHz, decoded, speechType);
+}
+
+}
 
 extern "C" {
+
+int APS5_VABI _ZN6webrtc12AudioDecoder6DecodeEPKhmimPsPNS0_10SpeechTypeE_nid_postfix(WebRtcAudioDecoder* decoder, const std::uint8_t* encoded, std::size_t encodedLen, int sampleRateHz,
+    std::size_t maxDecodedBytes, std::int16_t* decoded, WebRtcSpeechType* speechType) {
+    return DecodeChecked(decoder, WebRtcAudioDecoderPacketDurationSlot, WebRtcAudioDecoderDecodeInternalSlot, encoded, encodedLen, sampleRateHz, maxDecodedBytes, decoded, speechType);
+}
+
+int APS5_VABI _ZN6webrtc12AudioDecoder15DecodeRedundantEPKhmimPsPNS0_10SpeechTypeE_nid_postfix(WebRtcAudioDecoder* decoder, const std::uint8_t* encoded, std::size_t encodedLen,
+    int sampleRateHz, std::size_t maxDecodedBytes, std::int16_t* decoded, WebRtcSpeechType* speechType) {
+    return DecodeChecked(decoder, WebRtcAudioDecoderPacketDurationRedundantSlot, WebRtcAudioDecoderDecodeRedundantInternalSlot, encoded, encodedLen, sampleRateHz, maxDecodedBytes, decoded,
+        speechType);
+}
 
 bool APS5_VABI _ZNK6webrtc12AudioDecoder12HasDecodePlcEv_nid_postfix(const WebRtcAudioDecoder*) {
     return false;

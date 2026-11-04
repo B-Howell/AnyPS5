@@ -43,6 +43,7 @@
 #include "prx/libwebrtc/libwebrtc.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 
 namespace {
@@ -61,6 +62,25 @@ void ConstructAnaStats(WebRtcAnaStats& stats) {
     ClearOptional(stats.frameLengthDecreaseCounter);
     stats.uplinkPacketLossFraction.storage.nullState = 0;
     stats.uplinkPacketLossFraction.engaged = false;
+}
+
+std::int64_t DivideRoundToNearest(std::int64_t dividend, std::int64_t divisor) {
+    if (dividend < 0) {
+        std::int64_t quotient = dividend / divisor;
+        if (-(dividend % divisor) > divisor / 2)
+            --quotient;
+        return quotient;
+    }
+    std::int64_t quotient = dividend / divisor;
+    if (dividend % divisor > (divisor - 1) / 2)
+        ++quotient;
+    return quotient;
+}
+
+void OnReceivedUplinkBandwidth(WebRtcAudioEncoder* encoder, int targetAudioBitrateBps, WebRtcOptionalMilliseconds bwePeriodMs) {
+    if (!encoder)
+        throw std::invalid_argument("AudioEncoder requires an encoder");
+    WebRtcVirtualSlot<WebRtcAudioEncoderOnReceivedUplinkBandwidth>(encoder, WebRtcAudioEncoderOnReceivedUplinkBandwidthSlot)(encoder, targetAudioBitrateBps, bwePeriodMs);
 }
 
 }
@@ -93,5 +113,19 @@ void APS5_VABI _ZN6webrtc12AudioEncoder13OnReceivedRttEi_nid_postfix(WebRtcAudio
 void APS5_VABI _ZN6webrtc12AudioEncoder18OnReceivedOverheadEm_nid_postfix(WebRtcAudioEncoder*, std::size_t) {}
 
 void APS5_VABI _ZN6webrtc12AudioEncoder27SetReceiverFrameLengthRangeEii_nid_postfix(WebRtcAudioEncoder*, int, int) {}
+
+void APS5_VABI _ZN6webrtc12AudioEncoder28OnReceivedTargetAudioBitrateEi_nid_postfix(WebRtcAudioEncoder* encoder, int targetBps) {
+    WebRtcOptionalMilliseconds bwePeriodMs;
+    bwePeriodMs.storage.nullState = 0;
+    bwePeriodMs.engaged = false;
+    OnReceivedUplinkBandwidth(encoder, targetBps, bwePeriodMs);
+}
+
+void APS5_VABI _ZN6webrtc12AudioEncoder26OnReceivedUplinkAllocationENS_23BitrateAllocationUpdateE_nid_postfix(WebRtcAudioEncoder* encoder, WebRtcBitrateAllocationUpdate update) {
+    WebRtcOptionalMilliseconds bwePeriodMs;
+    bwePeriodMs.storage.value = DivideRoundToNearest(update.bwePeriodUs, 1000);
+    bwePeriodMs.engaged = true;
+    OnReceivedUplinkBandwidth(encoder, static_cast<int>(update.targetBitrateBps), bwePeriodMs);
+}
 
 }
