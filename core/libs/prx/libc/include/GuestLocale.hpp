@@ -269,5 +269,8 @@ static_assert(kNumPutCharVtableSlots * sizeof(std::uintptr_t) == 112);
 extern "C" std::uintptr_t _ZTVSt7num_putIcSt19ostreambuf_iteratorIcSt11char_traitsIcEEE_nid_postfix[kNumPutCharVtableSlots];
 extern "C" const GuestLocale::NumPutVtable* LibcNumPutMethods_nid_no_patch();
 extern "C" const GuestLocale::TimePutVtable* LibcTimePutMethods_nid_no_patch();
+inline constexpr std::size_t kCodecvtCharVtableSlots = 13;
+static_assert(kCodecvtCharVtableSlots * sizeof(std::uintptr_t) == 104);
+extern "C" std::uintptr_t _ZTVSt7codecvtIcc9_MbstatetE_nid_postfix[kCodecvtCharVtableSlots];
 
 #endif
