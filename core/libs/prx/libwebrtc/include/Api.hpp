@@ -10,6 +10,7 @@
 #include "prx/libwebrtc/include/RtcpCommonHeader.hpp"
 #include "prx/libwebrtc/include/Opus.hpp"
 #include "prx/libwebrtc/include/CpuFeatures.hpp"
+#include "prx/libwebrtc/include/VideoFrameBuffer.hpp"
 #include <cstddef>
 #include <cstdint>
 
@@ -113,13 +114,13 @@ int APS5_VABI _ZN6webrtc10I420Buffer6CreateEiiiii_nid_postfix(void);
 int APS5_VABI _ZN6webrtc10I420Buffer12MutableDataYEv_nid_postfix(void);
 int APS5_VABI _ZN6webrtc10I420Buffer12MutableDataUEv_nid_postfix(void);
 int APS5_VABI _ZN6webrtc10I420Buffer12MutableDataVEv_nid_postfix(void);
-int APS5_VABI _ZN6webrtc19I420BufferInterface6ToI420Ev_nid_postfix(void);
-int APS5_VABI _ZNK6webrtc19I420BufferInterface7GetI420Ev_nid_postfix(void);
+WebRtcVideoFrameBufferRef* APS5_VABI _ZN6webrtc19I420BufferInterface6ToI420Ev_nid_postfix(WebRtcVideoFrameBufferRef* result, WebRtcVideoFrameBuffer* buffer);
+const WebRtcVideoFrameBuffer* APS5_VABI _ZNK6webrtc19I420BufferInterface7GetI420Ev_nid_postfix(const WebRtcVideoFrameBuffer* buffer);
 int APS5_VABI _ZN6webrtc16VideoFrameBuffer12CropAndScaleEiiiiii_nid_postfix(void);
-int APS5_VABI _ZN6webrtc16VideoFrameBuffer20GetMappedFrameBufferEN3rtc9ArrayViewINS0_4TypeELln4711EEE_nid_postfix(void);
+WebRtcVideoFrameBufferRef* APS5_VABI _ZN6webrtc16VideoFrameBuffer20GetMappedFrameBufferEN3rtc9ArrayViewINS0_4TypeELln4711EEE_nid_postfix(WebRtcVideoFrameBufferRef* result, WebRtcVideoFrameBuffer* buffer, WebRtcVideoFrameBufferType* types, std::size_t typeCount);
 int APS5_VABI libwebrtcUnknown14(void);
-int APS5_VABI _ZNK6webrtc19I420BufferInterface11ChromaWidthEv_nid_postfix(void);
-int APS5_VABI _ZNK6webrtc19I420BufferInterface12ChromaHeightEv_nid_postfix(void);
+int APS5_VABI _ZNK6webrtc19I420BufferInterface11ChromaWidthEv_nid_postfix(const WebRtcVideoFrameBuffer* buffer);
+int APS5_VABI _ZNK6webrtc19I420BufferInterface12ChromaHeightEv_nid_postfix(const WebRtcVideoFrameBuffer* buffer);
 int APS5_VABI _ZNK6webrtc16VideoFrameBuffer7GetI420Ev_nid_postfix(void);
 int APS5_VABI _ZN6webrtc10VideoFrame7Builder5buildEv_nid_postfix(void);
 int APS5_VABI _ZN6webrtc10VideoFrame7Builder22set_video_frame_bufferERKNS_13scoped_refptrINS_16VideoFrameBufferEEE_nid_postfix(void);
