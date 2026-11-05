@@ -135,16 +135,22 @@ int APS5_VABI DecodeRedundantInternal(WebRtcAudioDecoder* decoder, const std::ui
     return 88;
 }
 
+constexpr std::size_t FixturePacketDurationSlot = 8;
+constexpr std::size_t FixturePacketDurationRedundantSlot = 9;
+constexpr std::size_t FixtureChannelsSlot = 12;
+constexpr std::size_t FixtureDecodeInternalSlot = 13;
+constexpr std::size_t FixtureDecodeRedundantInternalSlot = 14;
+
 WebRtcVirtualFunction decoderVtable[15];
 
 FakeDecoder MakeDecoder(int duration, int redundantDuration, std::size_t channels) {
     for (WebRtcVirtualFunction& slot : decoderVtable)
         slot = nullptr;
-    decoderVtable[WebRtcAudioDecoderPacketDurationSlot] = reinterpret_cast<WebRtcVirtualFunction>(&PacketDuration);
-    decoderVtable[WebRtcAudioDecoderPacketDurationRedundantSlot] = reinterpret_cast<WebRtcVirtualFunction>(&PacketDurationRedundant);
-    decoderVtable[WebRtcAudioDecoderChannelsSlot] = reinterpret_cast<WebRtcVirtualFunction>(&Channels);
-    decoderVtable[WebRtcAudioDecoderDecodeInternalSlot] = reinterpret_cast<WebRtcVirtualFunction>(&DecodeInternal);
-    decoderVtable[WebRtcAudioDecoderDecodeRedundantInternalSlot] = reinterpret_cast<WebRtcVirtualFunction>(&DecodeRedundantInternal);
+    decoderVtable[FixturePacketDurationSlot] = reinterpret_cast<WebRtcVirtualFunction>(&PacketDuration);
+    decoderVtable[FixturePacketDurationRedundantSlot] = reinterpret_cast<WebRtcVirtualFunction>(&PacketDurationRedundant);
+    decoderVtable[FixtureChannelsSlot] = reinterpret_cast<WebRtcVirtualFunction>(&Channels);
+    decoderVtable[FixtureDecodeInternalSlot] = reinterpret_cast<WebRtcVirtualFunction>(&DecodeInternal);
+    decoderVtable[FixtureDecodeRedundantInternalSlot] = reinterpret_cast<WebRtcVirtualFunction>(&DecodeRedundantInternal);
     calls = {};
     return {{decoderVtable}, duration, redundantDuration, channels};
 }

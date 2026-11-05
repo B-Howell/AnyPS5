@@ -101,12 +101,14 @@ void APS5_VABI OnReceivedUplinkBandwidth(WebRtcAudioEncoder* encoder, int target
     bandwidth.bwePeriodMs = bwePeriodMs;
 }
 
+constexpr std::size_t FixtureOnReceivedUplinkBandwidthSlot = 21;
+
 WebRtcVirtualFunction encoderVtable[22];
 
 WebRtcAudioEncoder MakeEncoder() {
     for (WebRtcVirtualFunction& slot : encoderVtable)
         slot = nullptr;
-    encoderVtable[WebRtcAudioEncoderOnReceivedUplinkBandwidthSlot] = reinterpret_cast<WebRtcVirtualFunction>(&OnReceivedUplinkBandwidth);
+    encoderVtable[FixtureOnReceivedUplinkBandwidthSlot] = reinterpret_cast<WebRtcVirtualFunction>(&OnReceivedUplinkBandwidth);
     bandwidth = {};
     std::memset(&bandwidth.bwePeriodMs, 0x5A, sizeof(bandwidth.bwePeriodMs));
     return {encoderVtable};
@@ -164,13 +166,12 @@ void TestUplinkAllocation() {
     Require(Received(encoder, 32000, 0));
 }
 
-void TestUplinkAllocationInMemory() {
-    using StackArguments = void (APS5_VABI*)(WebRtcAudioEncoder*, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t, std::int64_t,
-        std::int64_t, std::int64_t, std::int64_t);
-    auto allocation = reinterpret_cast<StackArguments>(&_ZN6webrtc12AudioEncoder26OnReceivedUplinkAllocationENS_23BitrateAllocationUpdateE_nid_postfix);
-    constexpr std::int64_t junk = 0x5A5A5A5A5A5A5A5A;
+void TestUplinkAllocationTypedGuestAbiCall() {
+    using AllocationCall = void (APS5_VABI*)(WebRtcAudioEncoder*, WebRtcBitrateAllocationUpdate);
+    AllocationCall allocation = &_ZN6webrtc12AudioEncoder26OnReceivedUplinkAllocationENS_23BitrateAllocationUpdateE_nid_postfix;
     WebRtcAudioEncoder encoder = MakeEncoder();
-    allocation(&encoder, junk, junk, junk, junk, junk, 48000, 1111, 0, 0, 7000, 0);
+    const WebRtcBitrateAllocationUpdate update = Update(48000, 7000);
+    allocation(&encoder, update);
     Require(Received(encoder, 48000, 7));
 }
 
@@ -187,7 +188,7 @@ int main() {
     TestNullPointers();
     TestTargetAudioBitrate();
     TestUplinkAllocation();
-    TestUplinkAllocationInMemory();
+    TestUplinkAllocationTypedGuestAbiCall();
     TestNullEncoder();
     return 0;
 }
