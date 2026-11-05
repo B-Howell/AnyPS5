@@ -407,20 +407,20 @@ int APS5_VABI PKImageEncode_SetDescriptiveMetadata_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
-int APS5_VABI PKImageEncode_SetEXIFMetadata_WMP_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageEncode_SetEXIFMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
+    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, exif));
 }
 
-int APS5_VABI PKImageEncode_SetGPSInfoMetadata_WMP_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageEncode_SetGPSInfoMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
+    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, gps));
 }
 
-int APS5_VABI PKImageEncode_SetIPTCNAAMetadata_WMP_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageEncode_SetIPTCNAAMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
+    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, iptc));
 }
 
-int APS5_VABI PKImageEncode_SetPhotoshopMetadata_WMP_nid_postfix() {
-    NotImplemented_nid_no_patch(__func__);
+std::int64_t APS5_VABI PKImageEncode_SetPhotoshopMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
+    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, photoshop));
 }
 
 int APS5_VABI PKImageEncode_SetPixelFormat_nid_postfix() {
