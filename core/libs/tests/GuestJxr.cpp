@@ -1,5 +1,5 @@
 #include "prx/libc/include/Api.hpp"
-#include "prx/libSceJxr/include/Api.hpp"
+#include "prx/libSceJxr/libSceJxr.hpp"
 #include "prx/libc/include/ApplicationHeap.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <array>
@@ -10,6 +10,7 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <cstdio>
 
 extern "C" {
 void JxrReferenceSlideOneMBRow_nid_no_patch(void* rows, std::size_t channels, std::size_t mbWidth, int top,
@@ -23,7 +24,8 @@ void JxrReferencePostProcBlock_nid_no_patch(void* rows, std::int32_t* p0, std::i
 
 namespace {
 
-void Require(bool value) { if (!value) std::abort(); }
+void Check(bool value, int line) { if (!value) { std::fprintf(stderr, "GuestJxr.cpp:%d: requirement failed\n", line); std::abort(); } }
+#define Require(value) Check((value), __LINE__)
 
 template<typename TAction>
 void RequireInvalidArgument(TAction action) {
@@ -42,6 +44,11 @@ int failAllocation = 0;
 std::size_t lastAllocationSize = 0;
 std::vector<void*> allocated;
 std::vector<void*> freed;
+bool failCalloc = false;
+std::size_t lastCount = 0;
+std::size_t lastSize = 0;
+void* lastAllocated = nullptr;
+int callocCalls = 0;
 
 void* APS5_VABI Allocate(std::size_t size) {
     ++allocations;
@@ -60,7 +67,13 @@ void APS5_VABI Free(void* pointer) {
     std::free(pointer);
 }
 void* APS5_VABI Reallocate(void* pointer, std::size_t size) { return std::realloc(pointer, size); }
-void* APS5_VABI Calloc(std::size_t count, std::size_t size) { return std::calloc(count, size); }
+void* APS5_VABI Calloc(std::size_t count, std::size_t size) {
+    ++callocCalls;
+    lastCount = count;
+    lastSize = size;
+    lastAllocated = failCalloc ? nullptr : std::calloc(count, size);
+    return lastAllocated;
+}
 void* APS5_VABI Align(std::size_t, std::size_t size) { return std::malloc(size); }
 void* APS5_VABI Realign(void* pointer, std::size_t size, std::size_t) { return std::realloc(pointer, size); }
 int APS5_VABI PosixAlign(void** pointer, std::size_t, std::size_t size) {
@@ -372,5 +385,31 @@ int main() {
     TestUpdate();
     TestPostProcMB();
     TestPostProcBlock();
+    for (const auto size : {std::size_t{1}, std::size_t{257}, std::size_t{4097}, std::size_t{0}}) {
+        memory = &memory;
+        const auto calls = callocCalls;
+        const auto result = PKAlloc_nid_postfix(&memory, size);
+        Require(callocCalls == calls + 1 && lastCount == 1 && lastSize == size);
+        Require(memory == lastAllocated);
+        Require(result == (memory ? 0 : -101));
+        if (size != 0) Require(memory != nullptr);
+        auto* bytes = static_cast<unsigned char*>(memory);
+        for (std::size_t i = 0; i < size; ++i) Require(bytes[i] == 0);
+        if (size != 0) std::memset(memory, 0xa5, size);
+        const auto previousFrees = frees;
+        const auto pointer = memory;
+        Require(PKFree_nid_postfix(&memory) == 0 && memory == nullptr);
+        Require(frees == previousFrees + (pointer ? 1 : 0));
+        if (pointer) Require(lastFreed == pointer);
+    }
+    failCalloc = true;
+    memory = &memory;
+    Require(PKAlloc_nid_postfix(&memory, 37) == -101);
+    Require(memory == nullptr && lastCount == 1 && lastSize == 37);
+    failCalloc = false;
+    bool threw = false;
+    try { PKAlloc_nid_postfix(nullptr, 1); }
+    catch (const std::invalid_argument&) { threw = true; }
+    Require(threw);
     return 0;
 }
