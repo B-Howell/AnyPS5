@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdio>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -70,6 +71,103 @@ void InitializeHeap() {
     ApplicationHeapInitialize_nid_no_patch(process.data());
 }
 
+
+using MetadataSetter = decltype(&PKImageEncode_SetEXIFMetadata_WMP_nid_postfix);
+
+void CheckMetadataSetter(MetadataSetter set, std::size_t offset) {
+    alignas(8) std::array<std::byte, 0x140> encoder;
+    encoder.fill(std::byte{0xa5});
+    constexpr std::size_t headerDoneOffset = 0xb0;
+    const auto write = [](auto& bytes, std::size_t at, auto value) {
+        std::memcpy(bytes.data() + at, &value, sizeof(value));
+    };
+    const auto writeStorage = [&](auto& bytes, void* pointer, std::uint32_t count) {
+        write(bytes, offset, pointer);
+        write(bytes, offset + 8, count);
+    };
+
+    write(encoder, headerDoneOffset, std::int32_t{0});
+    writeStorage(encoder, nullptr, 0);
+    const auto empty = encoder;
+    const std::array<std::uint8_t, 4> initial{0x33, 0, 0xb2, 0x81};
+    std::array<std::uint8_t, 3> replacement{0xcc, 0x55, 0xaa};
+    void* previous = nullptr;
+    for (const auto& [data, count] : {std::pair{initial.data(), std::uint32_t{initial.size()}},
+                                      std::pair{static_cast<const std::uint8_t*>(replacement.data()), std::uint32_t{replacement.size()}}}) {
+        const auto beforeAllocations = callocCalls;
+        const auto beforeFrees = frees;
+        Require(set(encoder.data(), data, count) == 0);
+        Require(callocCalls == beforeAllocations + 1 && lastCount == 1 && lastSize == count);
+        Require(frees == beforeFrees + (previous ? 1 : 0));
+        if (previous) Require(lastFreed == previous);
+        Require(lastAllocated != nullptr && lastAllocated != data);
+        Require(std::memcmp(lastAllocated, data, count) == 0);
+        auto expected = empty;
+        writeStorage(expected, lastAllocated, count);
+        Require(encoder == expected);
+        previous = lastAllocated;
+    }
+    replacement[0] = 0;
+    Require(static_cast<const std::uint8_t*>(previous)[0] == 0xcc);
+
+    const auto beforeAlias = encoder;
+    const auto beforeAliasAllocations = callocCalls;
+    const auto beforeAliasFrees = frees;
+    bool aliasThrew = false;
+    try { set(encoder.data(), static_cast<const std::uint8_t*>(previous), 3); }
+    catch (const std::invalid_argument&) { aliasThrew = true; }
+    Require(aliasThrew && encoder == beforeAlias);
+    Require(callocCalls == beforeAliasAllocations && frees == beforeAliasFrees);
+    aliasThrew = false;
+    try { set(encoder.data(), static_cast<const std::uint8_t*>(previous) + 1, 2); }
+    catch (const std::invalid_argument&) { aliasThrew = true; }
+    Require(aliasThrew && encoder == beforeAlias);
+    Require(callocCalls == beforeAliasAllocations && frees == beforeAliasFrees);
+
+    const auto beforeFieldAllocations = callocCalls;
+    const auto beforeFieldFrees = frees;
+    const auto* countField = reinterpret_cast<const std::uint8_t*>(encoder.data() + offset + 8);
+    Require(set(encoder.data(), countField, sizeof(std::uint32_t)) == 0);
+    Require(callocCalls == beforeFieldAllocations + 1 && lastCount == 1 && lastSize == sizeof(std::uint32_t));
+    Require(frees == beforeFieldFrees + 1 && lastFreed == previous);
+    const std::array<std::uint8_t, sizeof(std::uint32_t)> clearedCount{};
+    Require(std::memcmp(lastAllocated, clearedCount.data(), clearedCount.size()) == 0);
+    auto expectedFieldCopy = empty;
+    writeStorage(expectedFieldCopy, lastAllocated, sizeof(std::uint32_t));
+    Require(encoder == expectedFieldCopy);
+    previous = lastAllocated;
+
+    write(encoder, headerDoneOffset, std::int32_t{1});
+    const auto written = encoder;
+    const auto beforeRejectAllocations = callocCalls;
+    const auto beforeRejectFrees = frees;
+    Require(set(encoder.data(), initial.data(), initial.size()) == -109);
+    Require(encoder == written);
+    Require(callocCalls == beforeRejectAllocations && frees == beforeRejectFrees);
+
+    write(encoder, headerDoneOffset, std::int32_t{0});
+    const auto beforeZeroAllocations = callocCalls;
+    const auto beforeZeroFrees = frees;
+    const auto zeroResult = set(encoder.data(), initial.data(), 0);
+    Require(frees == beforeZeroFrees + 1 && lastFreed == previous);
+    Require(callocCalls == beforeZeroAllocations + 1 && lastCount == 1 && lastSize == 0);
+    Require(zeroResult == (lastAllocated ? 0 : -101));
+    auto expected = empty;
+    writeStorage(expected, lastAllocated, 0);
+    Require(encoder == expected);
+
+    Require(set(encoder.data(), initial.data(), initial.size()) == 0);
+    previous = lastAllocated;
+    const auto beforeFailureAllocations = callocCalls;
+    const auto beforeFailureFrees = frees;
+    failAllocation = true;
+    Require(set(encoder.data(), replacement.data(), replacement.size()) == -101);
+    failAllocation = false;
+    Require(callocCalls == beforeFailureAllocations + 1 && lastCount == 1 && lastSize == replacement.size());
+    Require(frees == beforeFailureFrees + 1 && lastFreed == previous);
+    Require(encoder == empty);
+}
+
 }
 
 int main() {
@@ -111,5 +209,9 @@ int main() {
     try { PKAlloc_nid_postfix(nullptr, 1); }
     catch (const std::invalid_argument&) { threw = true; }
     Require(threw);
+    CheckMetadataSetter(PKImageEncode_SetEXIFMetadata_WMP_nid_postfix, 0xd8);
+    CheckMetadataSetter(PKImageEncode_SetGPSInfoMetadata_WMP_nid_postfix, 0xe8);
+    CheckMetadataSetter(PKImageEncode_SetIPTCNAAMetadata_WMP_nid_postfix, 0xf8);
+    CheckMetadataSetter(PKImageEncode_SetPhotoshopMetadata_WMP_nid_postfix, 0x118);
     return 0;
 }
