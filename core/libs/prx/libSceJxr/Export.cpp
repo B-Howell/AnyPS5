@@ -2,16 +2,16 @@
 //
 // Copyright © Microsoft Corp.
 // All rights reserved.
-//
+// 
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
-//
+// 
 // • Redistributions of source code must retain the above copyright notice,
 //   this list of conditions and the following disclaimer.
 // • Redistributions in binary form must reproduce the above copyright notice,
 //   this list of conditions and the following disclaimer in the documentation
 //   and/or other materials provided with the distribution.
-//
+// 
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 // IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -28,6 +28,7 @@
 
 #include "prx/libc/include/Api.hpp"
 #include "prx/libSceJxr/include/Api.hpp"
+#include "src/EncoderMetadata.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -38,84 +39,6 @@
 
 namespace {
 constexpr std::int64_t WmpErrSuccess = 0;
-constexpr std::int64_t WmpErrOutOfSequence = -109;
-
-struct EncoderMetadata {
-    std::uint8_t* data;
-    std::uint32_t size;
-    std::uint32_t reserved;
-};
-
-struct EncoderMetadataPrefix {
-    std::byte reservedThroughHeaderDone[0xb0];
-    std::int32_t headerDone;
-    std::uint32_t headerPadding;
-    std::uint64_t pixelOffset;
-    std::uint64_t pixelBytes;
-    EncoderMetadata colorContext;
-    EncoderMetadata exif;
-    EncoderMetadata gps;
-    EncoderMetadata iptc;
-    EncoderMetadata xmp;
-    EncoderMetadata photoshop;
-};
-
-static_assert(sizeof(EncoderMetadata) == 0x10);
-static_assert(sizeof(void*) == 8);
-static_assert(sizeof(std::size_t) == 8);
-static_assert(offsetof(EncoderMetadataPrefix, headerDone) == 0xb0);
-static_assert(offsetof(EncoderMetadataPrefix, exif) + offsetof(EncoderMetadata, data) == 0xd8);
-static_assert(offsetof(EncoderMetadataPrefix, exif) + offsetof(EncoderMetadata, size) == 0xe0);
-static_assert(offsetof(EncoderMetadataPrefix, gps) + offsetof(EncoderMetadata, data) == 0xe8);
-static_assert(offsetof(EncoderMetadataPrefix, gps) + offsetof(EncoderMetadata, size) == 0xf0);
-static_assert(offsetof(EncoderMetadataPrefix, iptc) + offsetof(EncoderMetadata, data) == 0xf8);
-static_assert(offsetof(EncoderMetadataPrefix, iptc) + offsetof(EncoderMetadata, size) == 0x100);
-static_assert(offsetof(EncoderMetadataPrefix, photoshop) + offsetof(EncoderMetadata, data) == 0x118);
-static_assert(offsetof(EncoderMetadataPrefix, photoshop) + offsetof(EncoderMetadata, size) == 0x120);
-static_assert(sizeof(EncoderMetadataPrefix) == 0x128);
-
-bool Overlaps(const std::uint8_t* first, std::uint32_t firstSize, const std::uint8_t* second, std::uint32_t secondSize) {
-    if (first == second && first != nullptr && firstSize != 0) return true;
-    if (first == nullptr || second == nullptr || firstSize == 0 || secondSize == 0) return false;
-    const auto firstAddress = reinterpret_cast<std::uintptr_t>(first);
-    const auto secondAddress = reinterpret_cast<std::uintptr_t>(second);
-    if (firstAddress <= secondAddress) return secondAddress - firstAddress < firstSize;
-    return firstAddress - secondAddress < secondSize;
-}
-
-std::int64_t SetMetadata(void* encoder, const std::uint8_t* data, std::uint32_t size, std::size_t offset) {
-    if (encoder == nullptr) APS5_INVALID_ARG_EX;
-    auto* bytes = static_cast<std::byte*>(encoder);
-    std::int32_t headerDone;
-    std::memcpy(&headerDone, bytes + offsetof(EncoderMetadataPrefix, headerDone), sizeof(headerDone));
-    if (headerDone != 0) return WmpErrOutOfSequence;
-    if (size != 0 && data == nullptr) APS5_INVALID_ARG_EX;
-
-    auto* metadata = bytes + offset;
-    auto* dataOffset = metadata + offsetof(EncoderMetadata, data);
-    auto* sizeOffset = metadata + offsetof(EncoderMetadata, size);
-    std::uint8_t* oldData = nullptr;
-    std::uint32_t oldSize = 0;
-    std::memcpy(&oldData, dataOffset, sizeof(oldData));
-    std::memcpy(&oldSize, sizeOffset, sizeof(oldSize));
-    if (Overlaps(data, size, oldData, oldSize)) APS5_INVALID_ARG_EX;
-    void* oldGuestData = oldData;
-    PKFree_nid_postfix(&oldGuestData);
-    std::uint8_t* clearedData = nullptr;
-    std::memcpy(dataOffset, &clearedData, sizeof(clearedData));
-    const std::uint32_t clearedSize = 0;
-    std::memcpy(sizeOffset, &clearedSize, sizeof(clearedSize));
-
-    void* newGuestData = nullptr;
-    const auto result = PKAlloc_nid_postfix(&newGuestData, size);
-    auto* newData = static_cast<std::uint8_t*>(newGuestData);
-    std::memcpy(dataOffset, &newData, sizeof(newData));
-    if (result != WmpErrSuccess) return result;
-    if (size != 0) std::memcpy(newData, data, size);
-    std::memcpy(sizeOffset, &size, sizeof(size));
-    return WmpErrSuccess;
-}
-
 constexpr std::int64_t WmpErrOutOfMemory = -101;
 constexpr std::int64_t WmpErrBufferOverflow = -103;
 constexpr std::size_t MemoryBuffer = 0;
@@ -379,20 +302,32 @@ int APS5_VABI PKImageEncode_SetDescriptiveMetadata_nid_postfix() {
     NotImplemented_nid_no_patch(__func__);
 }
 
-std::int64_t APS5_VABI PKImageEncode_SetEXIFMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
-    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, exif));
+std::int64_t APS5_VABI PKImageEncode_SetEXIFMetadata_WMP_nid_postfix(
+    tagPKImageEncode* encoder, const std::uint8_t* metadata, std::uint32_t size) {
+    return Jxr::SetImageEncodeMetadata(
+        static_cast<void*>(encoder), metadata, size, offsetof(Jxr::ImageEncodeMetadataPrefix, exifMetadata),
+        offsetof(Jxr::ImageEncodeMetadataPrefix, exifMetadataByteCount));
 }
 
-std::int64_t APS5_VABI PKImageEncode_SetGPSInfoMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
-    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, gps));
+std::int64_t APS5_VABI PKImageEncode_SetGPSInfoMetadata_WMP_nid_postfix(
+    tagPKImageEncode* encoder, const std::uint8_t* metadata, std::uint32_t size) {
+    return Jxr::SetImageEncodeMetadata(
+        static_cast<void*>(encoder), metadata, size, offsetof(Jxr::ImageEncodeMetadataPrefix, gpsInfoMetadata),
+        offsetof(Jxr::ImageEncodeMetadataPrefix, gpsInfoMetadataByteCount));
 }
 
-std::int64_t APS5_VABI PKImageEncode_SetIPTCNAAMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
-    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, iptc));
+std::int64_t APS5_VABI PKImageEncode_SetIPTCNAAMetadata_WMP_nid_postfix(
+    tagPKImageEncode* encoder, const std::uint8_t* metadata, std::uint32_t size) {
+    return Jxr::SetImageEncodeMetadata(
+        static_cast<void*>(encoder), metadata, size, offsetof(Jxr::ImageEncodeMetadataPrefix, iptcNaaMetadata),
+        offsetof(Jxr::ImageEncodeMetadataPrefix, iptcNaaMetadataByteCount));
 }
 
-std::int64_t APS5_VABI PKImageEncode_SetPhotoshopMetadata_WMP_nid_postfix(void* encoder, const std::uint8_t* data, std::uint32_t size) {
-    return SetMetadata(encoder, data, size, offsetof(EncoderMetadataPrefix, photoshop));
+std::int64_t APS5_VABI PKImageEncode_SetPhotoshopMetadata_WMP_nid_postfix(
+    tagPKImageEncode* encoder, const std::uint8_t* metadata, std::uint32_t size) {
+    return Jxr::SetImageEncodeMetadata(
+        static_cast<void*>(encoder), metadata, size, offsetof(Jxr::ImageEncodeMetadataPrefix, photoshopMetadata),
+        offsetof(Jxr::ImageEncodeMetadataPrefix, photoshopMetadataByteCount));
 }
 
 int APS5_VABI PKImageEncode_SetPixelFormat_nid_postfix() {
