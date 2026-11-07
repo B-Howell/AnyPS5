@@ -4,8 +4,23 @@
 #include <cstddef>
 #include <cstdint>
 #include "prx/libSceJxr/GuestPixelInfo.h"
-#include "prx/libSceJxr/GuestPostProcInfo.h"
 #include "prx/libSceJxr/Stream.hpp"
+
+struct tagPKImageEncode;
+
+struct JxrGuestPostProcInfo {
+    std::int32_t mbDc;
+    std::uint8_t mbTexture;
+    std::int32_t blockDc[4][4];
+    std::uint8_t blockTexture[4][4];
+};
+
+using JxrPostProcRows = JxrGuestPostProcInfo* (*)[2];
+
+static_assert(offsetof(JxrGuestPostProcInfo, mbTexture) == 4);
+static_assert(offsetof(JxrGuestPostProcInfo, blockDc) == 8);
+static_assert(offsetof(JxrGuestPostProcInfo, blockTexture) == 72);
+static_assert(sizeof(JxrGuestPostProcInfo) == 88);
 
 extern "C" {
 
@@ -40,18 +55,6 @@ void APS5_VABI formatQuantizer_nid_postfix(void** quantizers, std::uint8_t mode,
                                            std::size_t position, std::int32_t shiftedUv, std::int32_t scaled);
 std::int32_t APS5_VABI getACPredMode_nid_postfix(void* macroblock, std::int32_t format);
 void APS5_VABI InitZigzagScan_nid_postfix(void* context);
-
-using JxrPostProcRows = JxrPostProcInfo* (*)[2];
-std::int32_t APS5_VABI initPostProc_nid_postfix(JxrPostProcRows rows, std::size_t mbWidth, std::size_t channels);
-void APS5_VABI termPostProc_nid_postfix(JxrPostProcRows rows, std::size_t channels);
-void APS5_VABI slideOneMBRow_nid_postfix(JxrPostProcRows rows, std::size_t channels, std::size_t mbWidth, int top,
-                                         int bottom);
-void APS5_VABI updatePostProcInfo_nid_postfix(JxrPostProcRows rows, std::int32_t* mb, std::size_t mbX,
-                                              std::size_t channel);
-void APS5_VABI postProcMB_nid_postfix(JxrPostProcRows rows, std::int32_t* p0, std::int32_t* p1, std::size_t mbX,
-                                      std::size_t channel, int threshold);
-void APS5_VABI postProcBlock_nid_postfix(JxrPostProcRows rows, std::int32_t* p0, std::int32_t* p1, std::size_t mbX,
-                                         std::size_t channel, int threshold);
 
 int APS5_VABI AllocateCodingContextDec_nid_postfix();
 int APS5_VABI CloseWS_List_nid_postfix();
@@ -101,7 +104,8 @@ int APS5_VABI PKImageEncode_Initialize_nid_postfix();
 int APS5_VABI PKImageEncode_Release_nid_postfix();
 int APS5_VABI PKImageEncode_SetColorContext_nid_postfix();
 int APS5_VABI PKImageEncode_SetDescriptiveMetadata_nid_postfix();
-int APS5_VABI PKImageEncode_SetEXIFMetadata_WMP_nid_postfix();
+std::int64_t APS5_VABI PKImageEncode_SetEXIFMetadata_WMP_nid_postfix(
+    tagPKImageEncode* encoder, const std::uint8_t* metadata, std::uint32_t size);
 int APS5_VABI PKImageEncode_SetGPSInfoMetadata_WMP_nid_postfix();
 int APS5_VABI PKImageEncode_SetIPTCNAAMetadata_WMP_nid_postfix();
 int APS5_VABI PKImageEncode_SetPhotoshopMetadata_WMP_nid_postfix();
@@ -131,8 +135,8 @@ int APS5_VABI allocateBitIOInfo_nid_postfix();
 int APS5_VABI allocatePredInfo_nid_postfix();
 int APS5_VABI allocateQuantizer_nid_postfix();
 int APS5_VABI allocateTileInfo_nid_postfix();
-int APS5_VABI attachISRead_nid_postfix();
-int APS5_VABI attachISWrite_nid_postfix();
+std::int64_t APS5_VABI attachISRead_nid_postfix(Jxr::BitIo* io, Jxr::Stream* stream, void* codec);
+std::int64_t APS5_VABI attachISWrite_nid_postfix(Jxr::BitIo* io, Jxr::Stream* stream);
 int APS5_VABI attach_SB_nid_postfix();
 int APS5_VABI checkImageBuffer_nid_postfix();
 int APS5_VABI detachISRead_nid_postfix();
@@ -147,9 +151,15 @@ int APS5_VABI getByteRead_SB_nid_postfix();
 int APS5_VABI getDCACPredMode_nid_postfix();
 int APS5_VABI getTilePos_nid_postfix();
 int APS5_VABI initMRPtr_nid_postfix();
+std::int32_t APS5_VABI initPostProc_nid_postfix(JxrGuestPostProcInfo* (*postProcInfo)[2], std::size_t mbWidth, std::size_t numChannels);
+void APS5_VABI postProcBlock_nid_postfix(JxrPostProcRows rows, std::int32_t* p0, std::int32_t* p1, std::size_t mbX, std::size_t channel, int threshold);
+void APS5_VABI postProcMB_nid_postfix(JxrPostProcRows rows, std::int32_t* p0, std::int32_t* p1, std::size_t mbX, std::size_t channel, int threshold);
 int APS5_VABI setBitIOPointers_nid_postfix();
 int APS5_VABI setUniformQuantizer_nid_postfix();
+void APS5_VABI slideOneMBRow_nid_postfix(JxrPostProcRows rows, std::size_t channels, std::size_t mbWidth, int top, int bottom);
 int APS5_VABI swapMRPtr_nid_postfix();
+void APS5_VABI termPostProc_nid_postfix(JxrGuestPostProcInfo* (*postProcInfo)[2], std::size_t numChannels);
+void APS5_VABI updatePostProcInfo_nid_postfix(JxrPostProcRows rows, std::int32_t* mb, std::size_t mbX, std::size_t channel);
 int APS5_VABI updatePredInfo_nid_postfix();
 int APS5_VABI useDCQuantizer_nid_postfix();
 int APS5_VABI useLPQuantizer_nid_postfix();

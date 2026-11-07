@@ -12,7 +12,7 @@ configure_jxr_native(jxr_glue_guest)
 set_source_files_properties(${JXR_SOURCE_DIR}/jxrgluelib/JXRGlue.c TARGET_DIRECTORY jxr_glue_guest
     PROPERTIES COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/src/GuestHeap.h")
 target_link_libraries(jxr_glue_guest PRIVATE jxr)
-target_link_libraries(libSceJxr PRIVATE jxr_lookup_native jxr_postprocess_native jxr_glue_guest)
+target_link_libraries(libSceJxr PRIVATE jxr_glue_guest jxr_lookup_native jxr_postprocess_native)
 if(NOT APPLE)
     target_link_options(libSceJxr PRIVATE LINKER:--exclude-libs,ALL)
 endif()
