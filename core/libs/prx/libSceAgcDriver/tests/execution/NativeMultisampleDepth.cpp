@@ -414,6 +414,24 @@ void QueueTargetWordFill(const Context& context, Recorder& recorder, std::uint64
     AgcDriver::GuestMemory::MarkWritten(address, bytes);
 }
 
+std::uint32_t FetchGroupIndex(ShaderRecompiler::SpirvModule& module, std::uint32_t u32, std::uint32_t v3, std::uint32_t group) {
+    const auto block = module.Type(spv::OpTypeStruct, u32);
+    module.AddAnnotation(spv::OpDecorate, block, spv::DecorationBlock);
+    module.AddAnnotation(spv::OpMemberDecorate, block, 0u, spv::DecorationOffset, 0u);
+    const auto push = module.DefineGlobalVariable(module.Type(spv::OpTypePointer, spv::StorageClassPushConstant, block), spv::StorageClassPushConstant);
+    const auto loaded = module.AllocateId();
+    module.AddFunction(spv::OpLoad, v3, loaded, group);
+    const auto groupX = module.AllocateId();
+    module.AddFunction(spv::OpCompositeExtract, u32, groupX, loaded, 0u);
+    const auto pointer = module.AllocateId();
+    module.AddFunction(spv::OpAccessChain, module.Type(spv::OpTypePointer, spv::StorageClassPushConstant, u32), pointer, push, module.Constant(spv::OpConstant, u32, 0u));
+    const auto base = module.AllocateId();
+    module.AddFunction(spv::OpLoad, u32, base, pointer);
+    const auto index = module.AllocateId();
+    module.AddFunction(spv::OpIAdd, u32, index, base, groupX);
+    return index;
+}
+
 std::vector<std::uint32_t> FetchShader(std::uint32_t width, std::uint32_t height, std::uint32_t fragments, bool arrayed, bool floating) {
     ShaderRecompiler::SpirvModule module;
     module.EmitCapability(spv::CapabilityShader);
@@ -443,10 +461,7 @@ std::vector<std::uint32_t> FetchShader(std::uint32_t width, std::uint32_t height
     const auto main = module.AllocateId();
     module.AddFunction(spv::OpFunction, voidType, main, spv::FunctionControlMaskNone, module.Type(spv::OpTypeFunction, voidType));
     module.AddFunction(spv::OpLabel, module.AllocateId());
-    const auto loaded = module.AllocateId();
-    module.AddFunction(spv::OpLoad, v3, loaded, group);
-    const auto index = module.AllocateId();
-    module.AddFunction(spv::OpCompositeExtract, u32, index, loaded, 0u);
+    const auto index = FetchGroupIndex(module, u32, v3, group);
     const auto binary = [&](spv::Op op, std::uint32_t a, std::uint32_t b) {
         const auto result = module.AllocateId();
         module.AddFunction(op, u32, result, a, b);
@@ -502,9 +517,12 @@ public:
             std::vector<VkWriteDescriptorSet> writes{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1u, 0u, 1u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffer, nullptr}};
             for (std::size_t index = 0u; index < images.size(); ++index) writes.push_back({VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, imageBinding(index), 0u, 1u, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &images[index], nullptr, nullptr});
             context.Function<PFN_vkUpdateDescriptorSets>("vkUpdateDescriptorSets")(context.device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0u, nullptr);
+            const VkPushConstantRange base{VK_SHADER_STAGE_COMPUTE_BIT, 0u, sizeof(std::uint32_t)};
             VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             layoutInfo.setLayoutCount = 1u;
             layoutInfo.pSetLayouts = &setLayout;
+            layoutInfo.pushConstantRangeCount = 1u;
+            layoutInfo.pPushConstantRanges = &base;
             Check(context.Function<PFN_vkCreatePipelineLayout>("vkCreatePipelineLayout")(context.device, &layoutInfo, nullptr, &layout), "fetch pipeline layout");
             VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
             shaderInfo.codeSize = code.size_bytes();
@@ -520,7 +538,15 @@ public:
     void Run(VkCommandBuffer commands, std::uint32_t groups) const {
         context.Function<PFN_vkCmdBindPipeline>("vkCmdBindPipeline")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         context.Function<PFN_vkCmdBindDescriptorSets>("vkCmdBindDescriptorSets")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0u, 1u, &set, 0u, nullptr);
-        context.Function<PFN_vkCmdDispatch>("vkCmdDispatch")(commands, groups, 1u, 1u);
+        const auto push = context.Function<PFN_vkCmdPushConstants>("vkCmdPushConstants");
+        const auto dispatch = context.Function<PFN_vkCmdDispatch>("vkCmdDispatch");
+        const auto limit = context.limits.maxComputeWorkGroupCount[0];
+        for (std::uint32_t base = 0u; base < groups;) {
+            const auto count = std::min(limit, groups - base);
+            push(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0u, sizeof(base), &base);
+            dispatch(commands, count, 1u, 1u);
+            base += count;
+        }
     }
 private:
     void release() noexcept {
@@ -573,10 +599,7 @@ std::vector<std::uint32_t> DepthStencilFetchShader(std::uint32_t width, std::uin
     const auto main = module.AllocateId();
     module.AddFunction(spv::OpFunction, voidType, main, spv::FunctionControlMaskNone, module.Type(spv::OpTypeFunction, voidType));
     module.AddFunction(spv::OpLabel, module.AllocateId());
-    const auto loaded = module.AllocateId();
-    module.AddFunction(spv::OpLoad, v3, loaded, group);
-    const auto index = module.AllocateId();
-    module.AddFunction(spv::OpCompositeExtract, u32, index, loaded, 0u);
+    const auto index = FetchGroupIndex(module, u32, v3, group);
     const auto operation = [&](spv::Op op, std::uint32_t type, auto... operands) {
         const auto result = module.AllocateId();
         module.AddFunction(op, type, result, operands...);
@@ -3572,6 +3595,107 @@ void CheckSmallerExtent(Context context, std::uint32_t samples) {
     std::printf("Native depth smaller extent samples=%u: attached to its owner and drawn within it\n", samples);
 }
 
+enum class CoveredOwner { SameExtent, OtherIdentity, Uncovered };
+
+void CheckCoveredOwner(Context context, std::uint32_t samples, CoveredOwner mode) {
+    constexpr VkExtent2D extent{200u, 130u}, inner{193u, 129u}, other{120u, 130u};
+    const auto depthBytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 4u, samples));
+    const auto stencilBytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 1u, samples));
+    const auto bytes = depthBytes + stencilBytes;
+    TargetMemory memory(bytes, true);
+    const auto one = std::bit_cast<std::uint32_t>(1.0f);
+    for (std::size_t offset = 0u; offset < depthBytes; offset += 4u) std::memcpy(memory.Data() + offset, &one, 4u);
+    std::memset(memory.Data() + depthBytes, 0x5a, stencilBytes);
+    DepthTarget target{memory.Address(), memory.Address() + depthBytes, extent, VK_FORMAT_D32_SFLOAT_S8_UINT, 1.0f, 0u, 0u, false, samples};
+    target.depthSwizzle = 24u;
+    target.pipeBankXor = samples == 2u ? 0u : 0x8c00u;
+    Recorder recorder(context);
+    recorder.Activate();
+    std::shared_ptr<StorageTexture> image;
+    std::unique_ptr<DepthRaster> first, second;
+    struct Cleanup {
+        Recorder& recorder;
+        Context context;
+        ~Cleanup() { recorder.Sync(); ClearCachedTextures(context.device); ClearDepthSurfaces(context.device); ClearMultisampleTargets(context.device); }
+    } cleanup{recorder, context};
+    const auto view = DepthSurfaceView(context, target);
+    Require(view != VK_NULL_HANDLE && DepthSurfaceAt(target.address), "the covered-owner fixture was not imported");
+    first = std::make_unique<DepthRaster>(context, target, view, StencilUse{VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, 0x20u}, false, true);
+    NoteDepthSurfaceWrite(context, target);
+    first->Run(recorder.Commands(), 0.25f);
+    const std::size_t skipped = mode == CoveredOwner::Uncovered ? 65536u : 0u;
+    const std::size_t covered = mode == CoveredOwner::Uncovered ? depthBytes - skipped : bytes;
+    GuestTextureResource storage{};
+    storage.baseAddress = memory.Address() + skipped;
+    storage.width = 256u;
+    storage.height = static_cast<std::uint32_t>(covered / 1024u);
+    storage.mipCount = storage.allocatedMipCount = 1u;
+    storage.dimension = TextureDimension::k2D;
+    storage.tileMode = TextureTileMode::kLinear;
+    storage.format = 22u;
+    storage.dstSelX = 4u;
+    storage.dstSelY = storage.dstSelZ = 0u;
+    storage.dstSelW = 1u;
+    const std::array<std::pair<std::uint64_t, std::uint64_t>, 1> written{{{storage.baseAddress, storage.baseAddress + covered}}};
+    RequireNoMultisampleTarget(storage.baseAddress, covered, "a storage image access");
+    RetireCoveredDepthSurfaces(context.device, written, {});
+    constexpr std::uint32_t pattern = 0x3c3c3c3cu;
+    {
+        std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
+        image = StorageTexture::Create(context, *context.detiler, storage, 0u);
+        const auto commands = recorder.Commands();
+        recorder.Keep(image);
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u};
+        VkClearColorValue value{};
+        value.float32[0] = std::bit_cast<float>(pattern);
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        context.Function<PFN_vkCmdClearColorImage>("vkCmdClearColorImage")(commands, image->Image(), VK_IMAGE_LAYOUT_GENERAL, &value, 1u, &range);
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+        image->MarkWholeWritten();
+    }
+    recorder.Sync();
+    Require(StorageTexture::AnyPendingOverlaps(written), "the storage results over the owner's planes were not left pending");
+    std::array<std::byte, 1> probe;
+    if (mode == CoveredOwner::Uncovered) {
+        Require(DepthSurfaceView(context, target) == view, "an owner a storage view did not cover was not reused");
+        second = std::make_unique<DepthRaster>(context, target, view, StencilUse{VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, 0x40u}, false, true);
+        NoteDepthSurfaceWrite(context, target);
+        second->Run(recorder.Commands(), 0.5f);
+        recorder.Sync();
+        Require(StorageTexture::AnyPendingOverlaps(written), "storage results over part of an owner's plane were dropped when the owner was drawn again");
+        std::printf("Native depth covered owner samples=%u: storage results over part of a plane keep the owner\n", samples);
+        return;
+    }
+    auto bound = target;
+    if (mode == CoveredOwner::OtherIdentity) bound.extent = other;
+    const auto drawn = mode == CoveredOwner::OtherIdentity ? other : inner;
+    auto drawnTarget = bound;
+    drawnTarget.extent = drawn;
+    const auto boundView = DepthSurfaceView(context, bound);
+    Require(boundView != VK_NULL_HANDLE && DepthSurfaceAt(bound.address), "the target bound over storage results that covered its owner was not imported");
+    second = std::make_unique<DepthRaster>(context, drawnTarget, boundView, StencilUse{VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, 0x40u}, false, true);
+    NoteDepthSurfaceWrite(context, drawnTarget);
+    second->Run(recorder.Commands(), 0.5f);
+    std::vector<std::byte> expected(bytes, std::byte{0x3c});
+    const MultisampleTextureLayout depthLayout(TextureTileMode::kZ64KBX, 4u, samples, bound.extent.width, bound.extent.height, 1u, bound.pipeBankXor);
+    const MultisampleTextureLayout stencilLayout(TextureTileMode::kZ64KBX, 1u, samples, bound.extent.width, bound.extent.height, 1u, bound.pipeBankXor);
+    for (std::uint32_t y = 0u; y < drawn.height; ++y) {
+        for (std::uint32_t x = 0u; x < drawn.width; ++x) {
+            for (std::uint32_t sample = 0u; sample < samples; ++sample) {
+                const float value = 0.5f + static_cast<float>(sample + 1u) / 16.0f;
+                std::memcpy(expected.data() + depthLayout.Offset(x, y, 0u, sample), &value, 4u);
+                expected[depthBytes + stencilLayout.Offset(x, y, 0u, sample)] = static_cast<std::byte>(0x40u + sample);
+            }
+        }
+    }
+    AgcDriver::GuestMemory::Read(bound.stencilAddress, probe);
+    Require(!StorageTexture::AnyPendingOverlaps(written), "storage results under a native depth target were still pending after its publication");
+    for (std::size_t offset = 0u; offset < bytes; ++offset) {
+        if (memory.Data()[offset] != expected[offset]) Require(false, "a native depth target drawn over stored storage results did not publish its samples over them at byte " + std::to_string(offset) + (offset < depthBytes ? " of the depth plane" : " of the stencil plane"));
+    }
+    std::printf("Native depth covered owner samples=%u mode=%u: storage results under the next attachment, its samples published over them\n", samples, static_cast<std::uint32_t>(mode));
+}
+
 void CheckUniformPlaneAliasedDepth(Context context, std::uint32_t samples) {
     constexpr VkExtent2D extent{5u, 3u};
     const auto depthBytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, 4u, samples));
@@ -3928,6 +4052,18 @@ int main(int argc, char** argv) {
             }
             for (const auto mode : {UniformPublication::Pages, UniformPublication::StencilRace, UniformPublication::PlaneStore}) CheckUniformPlanePublication(publishing, 4u, mode);
             return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--covered-owner") {
+            TextureDetiler detiler(context);
+            auto publishing = context;
+            publishing.detiler = &detiler;
+            std::uint32_t checked = 0u;
+            for (const auto samples : {2u, 4u, 8u}) {
+                if (!DepthSupported(context, VK_FORMAT_D32_SFLOAT_S8_UINT, samples) || (context.limits.framebufferStencilSampleCounts & samples) == 0u) continue;
+                for (const auto mode : {CoveredOwner::SameExtent, CoveredOwner::OtherIdentity, CoveredOwner::Uncovered}) CheckCoveredOwner(publishing, samples, mode);
+                ++checked;
+            }
+            return checked != 0u ? 0 : VulkanTestSkipped;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--smaller-extent") {
             TextureDetiler detiler(context);
