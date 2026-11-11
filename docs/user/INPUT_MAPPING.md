@@ -1,6 +1,6 @@
 # Controller, keyboard and mouse input
 
-AnyPS5 accepts SDL-mapped game controllers as well as its built-in keyboard and mouse bindings. Up to 4 controllers are supported simultaneously. The first connected controller is assigned to Player 1 and composed with keyboard and mouse input; additional controllers are sequentially assigned to Players 2, 3, and 4 (matching `libSceUserService` users). Xbox-style controllers and PlayStation controllers recognized by SDL use the standard PS button layout; sticks and analog triggers are passed through, and controllers can be connected or disconnected dynamically while the game is running. AnyPS5 uses its built-in keyboard and mouse bindings when no configuration file is present. To change selected keyboard and mouse bindings, create `anyps5-input.ini` beside the generated game executable. Set `ANYPS5_INPUT_CONFIG` to use a file at another path. Both the game directory and that path may contain any characters, such as `ü` or `日本`.
+AnyPS5 accepts SDL-mapped game controllers as well as its built-in keyboard and mouse bindings. Up to 4 controllers are supported simultaneously. The first connected controller is assigned to Player 1 and composed with keyboard and mouse input; additional controllers are sequentially assigned to Players 2, 3, and 4 (matching `libSceUserService` users). Xbox-style controllers and PlayStation controllers recognized by SDL use the standard PS button layout; sticks and analog triggers are passed through, and controllers can be connected or disconnected dynamically while the game is running. AnyPS5 uses its built-in keyboard and mouse bindings when no configuration file is present. To change selected keyboard and mouse bindings, create `anyps5-input.ini` beside the generated game executable. Set `ANYPS5_INPUT_CONFIG` to use a file at another path. Both the game directory and that path may contain any characters, such as `ü` or `日本`. With `ANYPS5_PAD_PORT0_STATE=controller`, keyboard and mouse input reaches the game only while a controller is bound to Player 1; see [Controller connection and user 0](USAGE.md#controller-connection-and-user-0).
 
 For an Xbox-layout controller, A/B/X/Y map to Cross/Circle/Square/Triangle, LB/RB map to L1/R1, and LT/RT map to analog L2/R2. Start maps to Options. D-pad and stick-click buttons are supported. On a PlayStation controller, touchpad clicks and the positions of up to two fingers on the touchpad are forwarded. On other controllers, View (Back) presses the touchpad at its center.
 
@@ -104,13 +104,15 @@ Set `APS5_PAD_INPUT_FILE` as described in [Controller input for test runs](USAGE
 python3 tools/pad_timeline.py menu.json /tmp/anyps5-pad --repeat 3 --gap-ms 500
 ```
 
-Events start relative to when the application first observes the new command. Button lists support every name in `pad_input.py`; simultaneous names are combined. An empty list or `["release"]` injects no buttons. Events must be ordered and non-overlapping, hold for 1–5000 ms, and finish within one hour. Repetition adds the specified gap after the last event; at most 4096 events are accepted after repetition. The helper validates the entire sequence before atomically replacing the command file.
+Events start relative to when the application first observes the new command. Button lists support every name in `pad_input.py`; simultaneous names are combined. An empty list or `["release"]` injects no buttons. An event may also hold `left_stick` and `right_stick` positions as `[x, y]` from 0 to 255 (128 is centred); a stick an event names but the other leaves out stays centred for that event, and an event without either keeps the physical sticks, for example `{"at_ms":0,"hold_ms":400,"buttons":[],"left_stick":[255,128]}` to push the left stick right. Events must be ordered and non-overlapping, hold for 1–5000 ms, and finish within one hour. Repetition adds the specified gap after the last event; at most 4096 events are accepted after repetition. The helper validates the entire sequence before atomically replacing the command file.
 
 The runtime evaluates scheduled events at each controller read, including their automatic releases. A new pulse or timeline replaces the remaining sequence. Physical controller buttons still add to injected buttons. Existing commands at the application's first controller read are ignored. This schedules wall-time input: events can be missed while the application is not reading its controller, and it does not reproduce frame timing or game state. Use gaps and holds long enough for the title's input loop.
 
 ## Controller vibration strength
 
 Vibration is not part of the input mapping file. The host-side strength of a controller's vibration is set with `ANYPS5_RUMBLE`, described in [Controller vibration strength](USAGE.md#controller-vibration-strength); `0` turns it off for every connected controller.
+
+The identification pulse that tells players' controllers apart is set with `ANYPS5_PAD_IDENTIFY`, described in [Controller identification pulse](USAGE.md#controller-identification-pulse).
 
 ## Analog keyboard input
 
@@ -128,6 +130,17 @@ With `TriggerRampMs` above 0, a key or mouse button bound to `L2` or `R2` presse
 ## Shake
 
 While the `Shake` input is held (X by default), the controller reports its acceleration and angular velocity swinging back and forth every 50 ms, for titles that ask the player to shake the controller. A controller's own motion sensors are used otherwise.
+
+## Per-game profiles
+
+A file named `anyps5-input.<TITLEID>.ini` beside `anyps5-input.ini` (or beside the file `ANYPS5_INPUT_CONFIG` names) is read after it when the running title has that ID, for example `anyps5-input.PPSA00001.ini`. The profile has the same format and overrides only what it lists: an action it names replaces the bindings from the shared file, a setting it names replaces the shared value, and everything else stays. Other titles don't read it. A title ID may contain letters, digits, `_` and `-`. An invalid line in a profile reports the profile's file and line number.
+
+For example, a profile that gives one title a lower mouse sensitivity and Cross on F:
+
+```ini
+MouseSensitivity = 0.6
+Cross = KEY:F
+```
 
 ## Mouse as an analog stick
 
